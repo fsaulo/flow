@@ -1,1 +1,6 @@
+# ignore data
 data/
+
+# untrack build folder
+scripts/build
+build/
