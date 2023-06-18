@@ -4,3 +4,4 @@ data/
 # untrack build folder
 scripts/build
 build/
+Session.vim
