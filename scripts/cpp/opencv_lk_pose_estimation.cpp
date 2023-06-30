@@ -79,17 +79,22 @@ int main(int argc, char* argv[])
     double cy = 240.5;
     double focalLength = 277.191356;
 
-    cv::Mat priorPose = cv::Mat::eye(4, 4, CV_64F);
+    cv::Mat priorPose = (cv::Mat_<double>(4, 4) <<
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 5,
+        0, 0, 0, 1);
     cv::Mat distCoeffs = (cv::Mat_<double>(5, 1) << 0, 0, 0, 0, 0);
-    cv::Mat cameraMatrix = (cv::Mat_<double>(3, 3) <<
+    cv::Mat K = (cv::Mat_<double>(3, 3) <<
         focalLength, 0, cx,
         0, focalLength, cy,
         0, 0, 1);
 
     double maxVelocityThreshold = 10;
-    double prevX = 250;
-    double prevY = 250;
+    double prevX = 500;
+    double prevY = 500;
     double x, y;
+    double dt = 1;
 
     bool pause = false;
     bool filterByStatus = true;
@@ -97,13 +102,16 @@ int main(int argc, char* argv[])
 
     x = y = prevX;
     std::vector<cv::Point2f> filteredPrevPts, filteredCurrPts;
-    cv::Mat trajectory = cv::Mat::zeros(480, 640, CV_8UC3);
+    cv::Mat trajectory = cv::Mat::zeros(1000, 1000, CV_8UC3);
+    cv::Mat priorVelocity = cv::Mat::zeros(3, 1, CV_64F);
 
     int loop_counter = 0;
+    int scaling = 1;
     auto start = std::chrono::high_resolution_clock::now();
 
     while (video.read(currFrame))
     {
+        cv::Mat frame = cv::Mat::zeros(480, 640, CV_8UC3);
         try {
             cv::resize(currFrame, currFrame, size, 0, 0, cv::INTER_LINEAR);
             cv::cvtColor(currFrame, currFrame, cv::COLOR_BGR2GRAY);
@@ -137,40 +145,59 @@ int main(int argc, char* argv[])
             }
 
             std::vector<cv::Mat> rvec_matrices, tvec_tvectors, nvec_normals;
-            cv::Mat homography = cv::findHomography(filteredPrevPts, filteredCurrPts, cv::RANSAC);
-            cv::decomposeHomographyMat(homography, cameraMatrix, rvec_matrices, tvec_tvectors, nvec_normals);
+            cv::Mat H = cv::findHomography(filteredPrevPts, filteredCurrPts, cv::RANSAC);
 
-            cv::Mat transformationMatrix = cv::Mat::eye(4, 4, CV_64F);
-            cv::Mat rotationMatrix = rvec_matrices[0];
-            cv::Mat transformationMatrix = tvec_tvectors[0];
+            // homography normalization
+            double norm = sqrt(H.at<double>(0,0)*H.at<double>(0,0) +
+            H.at<double>(1,0)*H.at<double>(1,0) +
+            H.at<double>(2,0)*H.at<double>(2,0));
+            H /= norm;
 
-            rotationMatrix.copyTo(transformationMatrix(cv::Rect(0, 0, 3, 3)));
-            translationVector.copyTo(transformationMatrix(cv::Rect(3, 0, 1, 3)));
+            cv::Mat c1 = H.col(0);
+            cv::Mat c2 = H.col(1);
+            cv::Mat c3 = c1.cross(c2);
 
-            if (!isValidRotationMatrix(rotationMatrix)) {
-                break;
+            cv::Mat tvec = H.col(2);
+            cv::Mat R(3, 3, CV_64F);
+
+            for (int i = 0; i < 3; i++) {
+                R.at<double>(i,0) = c1.at<double>(i,0);
+                R.at<double>(i,1) = c2.at<double>(i,0);
+                R.at<double>(i,2) = c3.at<double>(i,0);
             }
 
-            cv::Mat estimatedPose = transformationMatrix * priorPose;
+            cv::Mat_<double> W, U, Vt;
+            cv::SVDecomp(R, W, U, Vt);
+            R = U*Vt;
+            double det = cv::determinant(R);
 
-            std::cout << rotationMatrix << std::endl;
-            std::cout << translationVector << std::endl;
-            std::cout << estimatedPose << std::endl;
-
-            int scaling = focalLength / 21.7;
-            double x_candidate = estimatedPose.at<double>(0, 3);
-            double y_candidate = estimatedPose.at<double>(1, 3);
-            if (!std::isnan(x_candidate) && x_candidate < 1e6 &&
-                !std::isnan(y_candidate) && y_candidate < 1e6) {
-                priorPose = estimatedPose;
-                x = x_candidate * scaling + 250;
-                y = y_candidate * scaling + 250;
+            if (det < 0) {
+                for (int i = 0; i < 3; i++)
+                    Vt.at<double>(2, i) = Vt.at<double>(2, i) - 1;
+                R = U*Vt;
             }
+
+            cv::Mat cam_R_img = K.inv() * R * K;
+            cv::Mat cam_t_img = K.inv() * (tvec - priorVelocity) * dt;
+            cv::Mat cam_T_img = cv::Mat::eye(4, 4, CV_64F);
+
+            cam_R_img.copyTo(cam_T_img(cv::Rect(0, 0, 3, 3)));
+            cam_t_img.copyTo(cam_T_img(cv::Rect(3, 0, 1, 3)));
+
+            cv::Mat camPose = cam_T_img * priorPose;
+
+            std::cout << camPose << std::endl;
+
+            x = int(camPose.at<double>(0, 3) * scaling) + 500;
+            y = int(camPose.at<double>(1, 3) * scaling) + 500;
+
+            priorPose = camPose;
+            priorVelocity = tvec;
+
             std::cout << "(" << x << ", " << y << ")" << std::endl;
         } catch (const cv::Exception& e) {
             std::cout << e.what()<< std::endl;
         }
-
 
         cv::Mat flowDisplay = currFrame.clone();
         cv::Mat coloredFlowDisplay;
@@ -209,7 +236,6 @@ int main(int argc, char* argv[])
         auto end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> duration = end - start;
         if (duration.count() >= 1.0) {
-            std::cout << "[INFO]: thread frequency = " << loop_counter / duration.count() << " Hz" << std::endl;
             loop_counter = 0;
             start = std::chrono::high_resolution_clock::now();
         }
