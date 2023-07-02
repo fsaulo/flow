@@ -106,12 +106,12 @@ int main(int argc, char* argv[])
     cv::Mat priorVelocity = cv::Mat::zeros(3, 1, CV_64F);
 
     int loop_counter = 0;
-    int scaling = 1;
+    int scaleFactor = 10;
+    int scaleHeight = 20;
     auto start = std::chrono::high_resolution_clock::now();
 
     while (video.read(currFrame))
     {
-        cv::Mat frame = cv::Mat::zeros(480, 640, CV_8UC3);
         try {
             cv::resize(currFrame, currFrame, size, 0, 0, cv::INTER_LINEAR);
             cv::cvtColor(currFrame, currFrame, cv::COLOR_BGR2GRAY);
@@ -178,7 +178,7 @@ int main(int argc, char* argv[])
             }
 
             cv::Mat cam_R_img = K.inv() * R * K;
-            cv::Mat cam_t_img = K.inv() * (tvec - priorVelocity) * dt;
+            cv::Mat cam_t_img = K.inv() * (tvec - priorVelocity) / scaleHeight;
             cv::Mat cam_T_img = cv::Mat::eye(4, 4, CV_64F);
 
             cam_R_img.copyTo(cam_T_img(cv::Rect(0, 0, 3, 3)));
@@ -186,10 +186,11 @@ int main(int argc, char* argv[])
 
             cv::Mat camPose = cam_T_img * priorPose;
 
+            std::cout << cam_T_img << std::endl;
             std::cout << camPose << std::endl;
 
-            x = int(camPose.at<double>(0, 3) * scaling) + 500;
-            y = int(camPose.at<double>(1, 3) * scaling) + 500;
+            x = int(camPose.at<double>(0, 3) * scaleFactor) + 500;
+            y = int(camPose.at<double>(1, 3) * scaleFactor) + 500;
 
             priorPose = camPose;
             priorVelocity = tvec;
