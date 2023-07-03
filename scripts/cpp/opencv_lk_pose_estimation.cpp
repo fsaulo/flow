@@ -37,6 +37,65 @@ bool isValidRotationMatrix(const cv::Mat& rotationMatrix) {
     return true;
 }
 
+cv::Vec3f rotationMatrixToEulerAngles(cv::Mat &R)
+{
+ 
+    // assert(isValidRotationMatrix(R));
+ 
+    float sy = sqrt(R.at<double>(0,0) * R.at<double>(0,0) +  R.at<double>(1,0) * R.at<double>(1,0) );
+ 
+    bool singular = sy < 1e-6;
+ 
+    float x, y, z;
+    if (!singular) {
+        x = atan2(R.at<double>(2,1) , R.at<double>(2,2));
+        y = atan2(-R.at<double>(2,0), sy);
+        z = atan2(R.at<double>(1,0), R.at<double>(0,0));
+    } else {
+        x = atan2(-R.at<double>(1,2), R.at<double>(1,1));
+        y = atan2(-R.at<double>(2,0), sy);
+        z = 0;
+    }
+
+    return cv::Vec3f(x, y, z);
+}
+
+void applyBarrelDistortion(cv::Mat& image, float k)
+{
+    int width = image.cols;
+    int height = image.rows;
+
+    cv::Mat distortedImage = cv::Mat::zeros(image.size(), image.type());
+    cv::Point2f center(static_cast<float>(width / 2), static_cast<float>(height / 2));
+
+    cv::Mat mapX, mapY;
+    mapX.create(image.size(), CV_32FC1);
+    mapY.create(image.size(), CV_32FC1);
+
+    for (int y = 0; y < height; y++)
+    {
+        for (int x = 0; x < width; x++)
+        {
+            float nx = (x - center.x) / center.x;
+            float ny = (y - center.y) / center.y;
+            float r = sqrt(nx * nx + ny * ny);
+
+            float theta = atan(r);
+            float distortion = theta * k;
+
+            float srcX = center.x + distortion * center.x * nx;
+            float srcY = center.y + distortion * center.y * ny;
+
+            mapX.at<float>(y, x) = srcX;
+            mapY.at<float>(y, x) = srcY;
+        }
+    }
+
+    cv::remap(image, distortedImage, mapX, mapY, cv::INTER_LINEAR);
+
+    image = distortedImage;
+}
+
 int main(int argc, char* argv[])
 {
 
@@ -67,9 +126,12 @@ int main(int argc, char* argv[])
 
     video >> prevFrame;
 
-    float target_width = 640;
+    int target_width, target_height;
+    target_width = target_height = 640;
+
     float imratio = target_width / prevFrame.size().width;
-    cv::Size size = cv::Size((int) target_width, int(prevFrame.size().height * imratio));
+    cv::Size size = cv::Size(target_width, int(prevFrame.size().height * imratio));
+    cv::Mat distorted;
 
     cv::resize(prevFrame, prevFrame, size, 0, 0, cv::INTER_LINEAR);
     cv::cvtColor(prevFrame, prevFrame, cv::COLOR_BGR2GRAY);
@@ -91,10 +153,11 @@ int main(int argc, char* argv[])
         0, 0, 1);
 
     double maxVelocityThreshold = 10;
-    double prevX = 500;
-    double prevY = 500;
+    double prevX = target_width / 2.0;
+    double prevY = target_height / 2.0;
     double x, y;
-    double dt = 1;
+    double dt = 0.033;
+    double hfov = 1.047;
 
     bool pause = false;
     bool filterByStatus = true;
@@ -102,13 +165,17 @@ int main(int argc, char* argv[])
 
     x = y = prevX;
     std::vector<cv::Point2f> filteredPrevPts, filteredCurrPts;
-    cv::Mat trajectory = cv::Mat::zeros(1000, 1000, CV_8UC3);
+    cv::Mat trajectory = cv::Mat::zeros(target_width, target_height, CV_8UC3);
     cv::Mat priorVelocity = cv::Mat::zeros(3, 1, CV_64F);
+    cv::Mat priorR = cv::Mat::zeros(3, 3, CV_64F);
 
     int loop_counter = 0;
-    int scaleFactor = 10;
-    int scaleHeight = 20;
+    int scaleFactor = 100;
+    int scaleHeight = 100;
+    int imx, imy = (int) prevX;
+
     auto start = std::chrono::high_resolution_clock::now();
+
 
     while (video.read(currFrame))
     {
@@ -177,8 +244,14 @@ int main(int argc, char* argv[])
                 R = U*Vt;
             }
 
+            cv::Vec3f xyzAngles = rotationMatrixToEulerAngles(R);
+            cv::Rodrigues(xyzAngles * dt, R); 
+            R.convertTo(R, CV_64F);
+
+            std::cout << R << std::endl;
+
             cv::Mat cam_R_img = K.inv() * R * K;
-            cv::Mat cam_t_img = K.inv() * (tvec - priorVelocity) / scaleHeight;
+            cv::Mat cam_t_img = K.inv() * (tvec - priorVelocity) * dt;
             cv::Mat cam_T_img = cv::Mat::eye(4, 4, CV_64F);
 
             cam_R_img.copyTo(cam_T_img(cv::Rect(0, 0, 3, 3)));
@@ -186,15 +259,25 @@ int main(int argc, char* argv[])
 
             cv::Mat camPose = cam_T_img * priorPose;
 
-            std::cout << cam_T_img << std::endl;
-            std::cout << camPose << std::endl;
-
-            x = int(camPose.at<double>(0, 3) * scaleFactor) + 500;
-            y = int(camPose.at<double>(1, 3) * scaleFactor) + 500;
+            x = camPose.at<double>(0, 3) * scaleFactor + target_width / 2;
+            y = camPose.at<double>(1, 3) * scaleFactor + target_height / 2;
+            imx = (int) x;
+            imy = (int) y;
 
             priorPose = camPose;
             priorVelocity = tvec;
+            priorR = R;
 
+            float px, py;
+            px = -scaleHeight * tan(xyzAngles(0) - tvec.at<double>(0) * hfov / target_width);
+            py =  scaleHeight * tan(xyzAngles(2) - tvec.at<double>(1) * hfov / target_height);
+
+            // imx = (int) px + target_height / 2;
+            // imy = (int) py + target_height / 2;
+
+            std::cout << xyzAngles << std::endl;
+
+            // std::cout << "(" << px << ", " << py << ")" << std::endl;
             std::cout << "(" << x << ", " << y << ")" << std::endl;
         } catch (const cv::Exception& e) {
             std::cout << e.what()<< std::endl;
@@ -202,6 +285,7 @@ int main(int argc, char* argv[])
 
         cv::Mat flowDisplay = currFrame.clone();
         cv::Mat coloredFlowDisplay;
+
         cv::cvtColor(flowDisplay, coloredFlowDisplay, cv::COLOR_GRAY2BGR);
         for (size_t i = 0; i < prevPoints.size(); ++i) {
             if (status[i]) {
@@ -213,9 +297,9 @@ int main(int argc, char* argv[])
         filteredPrevPts.clear();
         filteredCurrPts.clear();
 
-        cv::line(trajectory, cv::Point(prevX, prevY), cv::Point(x, y), cv::Scalar(0, 0, 255), 2);
-        prevX = x;
-        prevY = y;
+        cv::line(trajectory, cv::Point(prevX, prevY), cv::Point(imx, imy), cv::Scalar(0, 0, 255), 2);
+        prevX = imx;
+        prevY = imy;
 
         if (!pause) {
             cv::imshow("Optical Flow", coloredFlowDisplay);
