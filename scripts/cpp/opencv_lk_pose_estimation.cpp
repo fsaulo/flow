@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <chrono>
 #include <thread>
 
@@ -6,8 +7,38 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/videoio.hpp>
 #include <opencv2/video.hpp>
+#include <opencv2/calib3d.hpp>
 
 #define PI 3.14159265358979323846
+
+class DCOffsetRemover {
+public:
+  DCOffsetRemover(int windowSize) : windowSize_(windowSize), sum_(0) {}
+
+  double removeOffset(double sample) {
+    // Add the new sample to the sum
+    sum_ += sample;
+
+    // Add the sample to the window buffer
+    windowBuffer_.push_back(sample);
+
+    // If the window buffer is larger than the specified window size,
+    // remove the oldest sample from the sum and the buffer
+    if (windowBuffer_.size() > windowSize_) {
+      sum_ -= windowBuffer_.front();
+      windowBuffer_.pop_front();
+    }
+
+    // Calculate the average and subtract it from the sample
+    double average = sum_ / windowBuffer_.size();
+    return sample - average;
+  }
+
+private:
+  int windowSize_;
+  double sum_;
+  std::deque<double> windowBuffer_;
+};  
 
 bool isValidRotationMatrix(const cv::Mat& rotationMatrix) {
     // Check matrix size
@@ -96,6 +127,31 @@ void applyBarrelDistortion(cv::Mat& image, float k)
     image = distortedImage;
 }
 
+void saveVec3fToFile(std::string filename, cv::Vec3f data)
+{
+    std::ofstream dataFile(filename, std::ios::app);
+    if (dataFile.is_open()) {
+        dataFile << data[0] << "," << data[1] << "," << data[2] << std::endl;
+        dataFile.close();
+    }
+} 
+
+void saveQuatfToFile(std::string filename, cv::Vec4f data)
+{
+    std::ofstream dataFile(filename, std::ios::app);
+    if (dataFile.is_open()) {
+        dataFile << data[0] << "," << data[1] << "," << data[2]  << "," << data[3] << std::endl;
+        dataFile.close();
+    }
+} 
+
+void clearFile(std::string filename)
+{
+    std::ofstream dataFile(filename, std::ios::trunc);
+    while (dataFile.is_open()) 
+        dataFile.close();
+}
+
 int main(int argc, char* argv[])
 {
 
@@ -123,6 +179,7 @@ int main(int argc, char* argv[])
     std::vector<cv::Point2f> prevPoints, currPoints;
     std::vector<uchar> status;
     std::vector<float> error;
+    std::vector<cv::Vec3f> values;
 
     video >> prevFrame;
 
@@ -137,6 +194,9 @@ int main(int argc, char* argv[])
     cv::cvtColor(prevFrame, prevFrame, cv::COLOR_BGR2GRAY);
     cv::goodFeaturesToTrack(prevFrame, prevPoints, 500, 0.01, 10);
 
+    clearFile("angular_velocity.csv");
+    clearFile("linear_velocity.csv");
+
     double cx = 320.5;
     double cy = 240.5;
     double focalLength = 277.191356;
@@ -144,7 +204,7 @@ int main(int argc, char* argv[])
     cv::Mat priorPose = (cv::Mat_<double>(4, 4) <<
         1, 0, 0, 0,
         0, 1, 0, 0,
-        0, 0, 1, 5,
+        0, 0, 1, 0,
         0, 0, 0, 1);
     cv::Mat distCoeffs = (cv::Mat_<double>(5, 1) << 0, 0, 0, 0, 0);
     cv::Mat K = (cv::Mat_<double>(3, 3) <<
@@ -166,19 +226,25 @@ int main(int argc, char* argv[])
     x = y = prevX;
     std::vector<cv::Point2f> filteredPrevPts, filteredCurrPts;
     cv::Mat trajectory = cv::Mat::zeros(target_width, target_height, CV_8UC3);
-    cv::Mat priorVelocity = cv::Mat::zeros(3, 1, CV_64F);
+    cv::Mat accVelocity = cv::Mat::zeros(3, 1, CV_64F);
     cv::Mat priorR = cv::Mat::zeros(3, 3, CV_64F);
+    cv::Mat lastVec = cv::Mat::zeros(3, 1, CV_64F);
 
     int loop_counter = 0;
-    int scaleFactor = 100;
+    int scaleFactor = 2;
     int scaleHeight = 100;
     int imx, imy = (int) prevX;
 
     auto start = std::chrono::high_resolution_clock::now();
 
+    DCOffsetRemover xVelFilter(100); 
+    DCOffsetRemover yVelFilter(100); 
+    DCOffsetRemover zVelFilter(100); 
 
     while (video.read(currFrame))
     {
+        auto runtime = std::chrono::high_resolution_clock::now();
+
         try {
             cv::resize(currFrame, currFrame, size, 0, 0, cv::INTER_LINEAR);
             cv::cvtColor(currFrame, currFrame, cv::COLOR_BGR2GRAY);
@@ -243,21 +309,34 @@ int main(int argc, char* argv[])
                     Vt.at<double>(2, i) = Vt.at<double>(2, i) - 1;
                 R = U*Vt;
             }
-
-            cv::Vec3f xyzAngles = rotationMatrixToEulerAngles(R);
-            cv::Rodrigues(xyzAngles * dt, R); 
-            R.convertTo(R, CV_64F);
-
-            std::cout << R << std::endl;
+            
+            // moving average filtering
+            tvec = (tvec + lastVec) * 0.5;
 
             cv::Mat cam_R_img = K.inv() * R * K;
-            cv::Mat cam_t_img = K.inv() * (tvec - priorVelocity) * dt;
+            cv::Mat cam_t_img = K.inv() * (tvec);
             cv::Mat cam_T_img = cv::Mat::eye(4, 4, CV_64F);
+
+            cam_t_img.at<double>(0) = xVelFilter.removeOffset(cam_t_img.at<double>(0)) * -1;
+            cam_t_img.at<double>(1) = yVelFilter.removeOffset(cam_t_img.at<double>(1));
+            cam_t_img.at<double>(2) = zVelFilter.removeOffset(cam_t_img.at<double>(2));
 
             cam_R_img.copyTo(cam_T_img(cv::Rect(0, 0, 3, 3)));
             cam_t_img.copyTo(cam_T_img(cv::Rect(3, 0, 1, 3)));
 
             cv::Mat camPose = cam_T_img * priorPose;
+            cv::Mat camRot = camPose(cv::Rect(0, 0, 3, 3)).clone();
+
+            accVelocity = camPose.rowRange(0, 3).col(3);
+
+            cv::Vec3f xyzAngles = rotationMatrixToEulerAngles(cam_R_img);
+            cv::Vec3f xyzVelocity = accVelocity;
+
+            saveVec3fToFile("angular_velocity.csv", xyzAngles);
+            saveVec3fToFile("linear_velocity.csv", xyzVelocity);
+
+            std::cout << camPose << std::endl;
+            std::cout << xyzVelocity << std::endl;
 
             x = camPose.at<double>(0, 3) * scaleFactor + target_width / 2;
             y = camPose.at<double>(1, 3) * scaleFactor + target_height / 2;
@@ -265,8 +344,8 @@ int main(int argc, char* argv[])
             imy = (int) y;
 
             priorPose = camPose;
-            priorVelocity = tvec;
             priorR = R;
+            lastVec = tvec;
 
             float px, py;
             px = -scaleHeight * tan(xyzAngles(0) - tvec.at<double>(0) * hfov / target_width);
@@ -278,7 +357,7 @@ int main(int argc, char* argv[])
             std::cout << xyzAngles << std::endl;
 
             // std::cout << "(" << px << ", " << py << ")" << std::endl;
-            std::cout << "(" << x << ", " << y << ")" << std::endl;
+            // std::cout << "(" << x << ", " << y << ")" << std::endl;
         } catch (const cv::Exception& e) {
             std::cout << e.what()<< std::endl;
         }
@@ -320,6 +399,10 @@ int main(int argc, char* argv[])
         loop_counter++;
         auto end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> duration = end - start;
+        std::chrono::duration<double> step = end - runtime;
+
+        dt = step.count();
+        
         if (duration.count() >= 1.0) {
             loop_counter = 0;
             start = std::chrono::high_resolution_clock::now();
