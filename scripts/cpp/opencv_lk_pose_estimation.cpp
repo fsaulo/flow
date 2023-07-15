@@ -2,8 +2,12 @@
 #include <fstream>
 #include <chrono>
 #include <thread>
+#include <iterator>
+
+#include <Eigen/Dense>
 
 #include <opencv2/core.hpp>
+#include <opencv2/core/eigen.hpp>
 #include <opencv2/opencv.hpp>
 #include <opencv2/videoio.hpp>
 #include <opencv2/video.hpp>
@@ -88,6 +92,20 @@ bool isValidRotationMatrix(const cv::Mat& rotationMatrix) {
     return true;
 }
 
+cv::Vec4f rotationMatrixToQuaternion(const cv::Mat& rotationMatrix)
+{
+    Eigen::Matrix3d eigenRotationMatrix;
+    cv::cv2eigen(rotationMatrix, eigenRotationMatrix);
+
+    Eigen::Quaterniond quaternion(eigenRotationMatrix);
+    cv::Vec4f result;
+    result[0] = static_cast<float>(quaternion.x());
+    result[1] = static_cast<float>(quaternion.y());
+    result[2] = static_cast<float>(quaternion.z());
+    result[3] = static_cast<float>(quaternion.w());
+    return result;
+}
+
 cv::Vec3f rotationMatrixToEulerAngles(cv::Mat &R)
 {
  
@@ -147,23 +165,6 @@ void applyBarrelDistortion(cv::Mat& image, float k)
     image = distortedImage;
 }
 
-void saveVec3fToFile(std::string filename, cv::Vec3f data)
-{
-    std::ofstream dataFile(filename, std::ios::app);
-    if (dataFile.is_open()) {
-        dataFile << data[0] << "," << data[1] << "," << data[2] << std::endl;
-        dataFile.close();
-    }
-} 
-
-void saveQuatfToFile(std::string filename, cv::Vec4f data)
-{
-    std::ofstream dataFile(filename, std::ios::app);
-    if (dataFile.is_open()) {
-        dataFile << data[0] << "," << data[1] << "," << data[2]  << "," << data[3] << std::endl;
-        dataFile.close();
-    }
-} 
 
 void clearFile(std::string filename)
 {
@@ -216,6 +217,7 @@ int main(int argc, char* argv[])
 
     clearFile("angular_velocity.csv");
     clearFile("linear_velocity.csv");
+    clearFile("quaternion.csv");
 
     double cx = 320.5;
     double cy = 240.5;
@@ -349,14 +351,17 @@ int main(int argc, char* argv[])
 
             accVelocity = camPose.rowRange(0, 3).col(3);
 
+            cv::Vec4f quatPose = rotationMatrixToQuaternion(camRot);
             cv::Vec3f xyzAngles = rotationMatrixToEulerAngles(cam_R_img);
             cv::Vec3f xyzVelocity = accVelocity;
 
-            saveVec3fToFile("angular_velocity.csv", xyzAngles);
-            saveVec3fToFile("linear_velocity.csv", xyzVelocity);
+            saveCvVecToFile("quaternion.csv", quatPose);
+            saveCvVecToFile("angular_velocity.csv", xyzAngles);
+            saveCvVecToFile("linear_velocity.csv", xyzVelocity);
 
             std::cout << camPose << std::endl;
             std::cout << xyzVelocity << std::endl;
+            std::cout << quatPose << std::endl;
 
             x = camPose.at<double>(0, 3) * scaleFactor + target_width / 2;
             y = camPose.at<double>(1, 3) * scaleFactor + target_height / 2;

@@ -8,6 +8,9 @@ file(GLOB_RECURSE CPP_SOURCES "cpp/*.cpp")
 file(GLOB_RECURSE PYTHON_SOURCES "*.py")
 
 find_package(OpenCV REQUIRED)
+find_package(Eigen3 REQUIRED)
+
+include_directories(${EIGEN3_INCLUDE_DIRS})
 
 foreach(CPP_SOURCE ${CPP_SOURCES})
     get_filename_component(CPP_TARGET_NAME ${CPP_SOURCE} NAME_WE)
@@ -19,6 +22,7 @@ foreach(CPP_SOURCE ${CPP_SOURCES})
         opencv_imgproc 
         opencv_video
         opencv_videoio
+        ${EIGEN3_LIBRARIES}
     )
 endforeach()
 
