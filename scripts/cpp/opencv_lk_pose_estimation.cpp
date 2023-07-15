@@ -40,6 +40,26 @@ private:
   std::deque<double> windowBuffer_;
 };  
 
+template<typename T, int N>
+std::vector<T> cvVecToStdVector(const cv::Vec<T, N>& vect) { return std::vector<T>(vect.val, vect.val + N); }
+
+template<typename T, int N>
+void saveCvVecToFile(std::string filename, const cv::Vec<T, N>& vect)
+{
+    std::vector<float> vectorData = cvVecToStdVector(vect);
+    std::ofstream dataFile(filename, std::ios::app);
+    if (!dataFile.is_open()) {
+        std::cerr << "Failed to open file: " << filename << std::endl;
+        return;
+    }
+
+    std::copy(vectorData.begin(), vectorData.end() - 1, std::ostream_iterator<T>(dataFile, ","));
+    dataFile << vectorData.back() << std::endl;
+
+    // dataFile << std::endl;
+    dataFile.close();
+}
+
 bool isValidRotationMatrix(const cv::Mat& rotationMatrix) {
     // Check matrix size
     if (rotationMatrix.rows != 3 || rotationMatrix.cols != 3) {
