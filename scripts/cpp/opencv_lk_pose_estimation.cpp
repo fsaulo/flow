@@ -17,9 +17,12 @@
 
 class DCOffsetRemover {
 public:
-  DCOffsetRemover(int windowSize) : windowSize_(windowSize), sum_(0) {}
+  DCOffsetRemover(int windowSize) : windowSize_(windowSize), sum_(0), movingSum_(0) {}
 
   double removeOffset(double sample) {
+    if (windowSize_ == 0) 
+        return sample;
+
     // Add the new sample to the sum
     sum_ += sample;
 
@@ -38,9 +41,16 @@ public:
     return sample - average;
   }
 
+  double update(double sample) {
+      double value = removeOffset(sample);
+      movingSum_ += value;
+      return movingSum_ / windowBuffer_.size();
+  }
+
 private:
   int windowSize_;
   double sum_;
+  double movingSum_;
   std::deque<double> windowBuffer_;
 };  
 
@@ -59,9 +69,16 @@ void saveCvVecToFile(std::string filename, const cv::Vec<T, N>& vect)
 
     std::copy(vectorData.begin(), vectorData.end() - 1, std::ostream_iterator<T>(dataFile, ","));
     dataFile << vectorData.back() << std::endl;
-
-    // dataFile << std::endl;
     dataFile.close();
+}
+
+void clearFile(std::string filename)
+{
+    std::ofstream dataFile(filename, std::ios::trunc);
+    while (dataFile.is_open()) {
+        dataFile << "x,y,z,w" << std::endl;
+        dataFile.close();
+    }
 }
 
 bool isValidRotationMatrix(const cv::Mat& rotationMatrix) {
@@ -166,12 +183,6 @@ void applyBarrelDistortion(cv::Mat& image, float k)
 }
 
 
-void clearFile(std::string filename)
-{
-    std::ofstream dataFile(filename, std::ios::trunc);
-    while (dataFile.is_open()) 
-        dataFile.close();
-}
 
 int main(int argc, char* argv[])
 {
@@ -245,7 +256,7 @@ int main(int argc, char* argv[])
     bool filterByStatus = true;
     bool filterByVelocity = false;
 
-    x = y = prevX;
+    x = y = 0;
     std::vector<cv::Point2f> filteredPrevPts, filteredCurrPts;
     cv::Mat trajectory = cv::Mat::zeros(target_width, target_height, CV_8UC3);
     cv::Mat accVelocity = cv::Mat::zeros(3, 1, CV_64F);
@@ -259,9 +270,17 @@ int main(int argc, char* argv[])
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    DCOffsetRemover xVelFilter(100); 
-    DCOffsetRemover yVelFilter(100); 
-    DCOffsetRemover zVelFilter(100); 
+    DCOffsetRemover xVelFilter(5); 
+    DCOffsetRemover yVelFilter(5); 
+    DCOffsetRemover zVelFilter(5); 
+
+    DCOffsetRemover xxVelFilter(20); 
+    DCOffsetRemover yyVelFilter(20); 
+    DCOffsetRemover zzVelFilter(20); 
+
+    DCOffsetRemover xAngFilter(20); 
+    DCOffsetRemover yAngFilter(20); 
+    DCOffsetRemover zAngFilter(20); 
 
     while (video.read(currFrame))
     {
@@ -331,16 +350,13 @@ int main(int argc, char* argv[])
                     Vt.at<double>(2, i) = Vt.at<double>(2, i) - 1;
                 R = U*Vt;
             }
-            
-            // moving average filtering
-            tvec = (tvec + lastVec) * 0.5;
 
             cv::Mat cam_R_img = K.inv() * R * K;
-            cv::Mat cam_t_img = K.inv() * (tvec);
+            cv::Mat cam_t_img = K.inv() * (tvec) * dt * 0.5;
             cv::Mat cam_T_img = cv::Mat::eye(4, 4, CV_64F);
 
             cam_t_img.at<double>(0) = xVelFilter.removeOffset(cam_t_img.at<double>(0)) * -1;
-            cam_t_img.at<double>(1) = yVelFilter.removeOffset(cam_t_img.at<double>(1));
+            cam_t_img.at<double>(1) = yVelFilter.removeOffset(cam_t_img.at<double>(1)) * -1;
             cam_t_img.at<double>(2) = zVelFilter.removeOffset(cam_t_img.at<double>(2));
 
             cam_R_img.copyTo(cam_T_img(cv::Rect(0, 0, 3, 3)));
@@ -355,6 +371,14 @@ int main(int argc, char* argv[])
             cv::Vec3f xyzAngles = rotationMatrixToEulerAngles(cam_R_img);
             cv::Vec3f xyzVelocity = accVelocity;
 
+            xyzAngles[0] = xAngFilter.update(xyzAngles[0]);
+            xyzAngles[1] = yAngFilter.update(xyzAngles[1]);
+            xyzAngles[2] = zAngFilter.update(xyzAngles[2]) * -1;
+
+            xyzVelocity[0] = xxVelFilter.update(xyzVelocity[0]);
+            xyzVelocity[1] = yyVelFilter.update(xyzVelocity[1]);
+            xyzVelocity[2] = zzVelFilter.update(xyzVelocity[2]);
+
             saveCvVecToFile("quaternion.csv", quatPose);
             saveCvVecToFile("angular_velocity.csv", xyzAngles);
             saveCvVecToFile("linear_velocity.csv", xyzVelocity);
@@ -363,26 +387,14 @@ int main(int argc, char* argv[])
             std::cout << xyzVelocity << std::endl;
             std::cout << quatPose << std::endl;
 
-            x = camPose.at<double>(0, 3) * scaleFactor + target_width / 2;
-            y = camPose.at<double>(1, 3) * scaleFactor + target_height / 2;
-            imx = (int) x;
-            imy = (int) y;
+            x += xyzVelocity[0];
+            y += xyzVelocity[1];
+            imx = (int) x * scaleFactor + target_width / 2;
+            imy = (int) y * scaleFactor + target_width / 2;
 
             priorPose = camPose;
             priorR = R;
             lastVec = tvec;
-
-            float px, py;
-            px = -scaleHeight * tan(xyzAngles(0) - tvec.at<double>(0) * hfov / target_width);
-            py =  scaleHeight * tan(xyzAngles(2) - tvec.at<double>(1) * hfov / target_height);
-
-            // imx = (int) px + target_height / 2;
-            // imy = (int) py + target_height / 2;
-
-            std::cout << xyzAngles << std::endl;
-
-            // std::cout << "(" << px << ", " << py << ")" << std::endl;
-            // std::cout << "(" << x << ", " << y << ")" << std::endl;
         } catch (const cv::Exception& e) {
             std::cout << e.what()<< std::endl;
         }
