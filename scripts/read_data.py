@@ -8,8 +8,12 @@ def read_text_file(filename):
     data = []
     with open(filename, 'r') as file:
         for line in file:
-            line_data = [float(value) for value in line.strip().split(',')]
-            data.append(line_data)
+            try:
+                line_data = [float(value) for value in line.strip().split(',')]
+            except ValueError:
+                pass
+            else:
+                data.append(line_data)
     return np.array(data)
 
 def main(args):
