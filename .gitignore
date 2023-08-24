@@ -5,3 +5,4 @@ data/
 scripts/build
 build/
 Session.vim
+.virtual_documents/
