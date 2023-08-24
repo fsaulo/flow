@@ -58,7 +58,7 @@ template<typename T, int N>
 std::vector<T> cvVecToStdVector(const cv::Vec<T, N>& vect) { return std::vector<T>(vect.val, vect.val + N); }
 
 template<typename T, int N>
-void saveCvVecToFile(std::string filename, const cv::Vec<T, N>& vect)
+void saveCvVecToFile(std::string& filename, const cv::Vec<T, N>& vect)
 {
     std::vector<float> vectorData = cvVecToStdVector(vect);
     std::ofstream dataFile(filename, std::ios::app);
@@ -72,7 +72,7 @@ void saveCvVecToFile(std::string filename, const cv::Vec<T, N>& vect)
     dataFile.close();
 }
 
-void clearFile(std::string filename)
+void clearFile(std::string& filename)
 {
     std::ofstream dataFile(filename, std::ios::trunc);
     while (dataFile.is_open()) {
@@ -123,7 +123,7 @@ cv::Vec4f rotationMatrixToQuaternion(const cv::Mat& rotationMatrix)
     return result;
 }
 
-cv::Vec3f rotationMatrixToEulerAngles(cv::Mat &R)
+cv::Vec3f rotationMatrixToEulerAngles(cv::Mat& R)
 {
  
     // assert(isValidRotationMatrix(R));
@@ -182,8 +182,6 @@ void applyBarrelDistortion(cv::Mat& image, float k)
     image = distortedImage;
 }
 
-
-
 int main(int argc, char* argv[])
 {
 
@@ -226,9 +224,13 @@ int main(int argc, char* argv[])
     cv::cvtColor(prevFrame, prevFrame, cv::COLOR_BGR2GRAY);
     cv::goodFeaturesToTrack(prevFrame, prevPoints, 500, 0.01, 10);
 
-    clearFile("angular_velocity.csv");
-    clearFile("linear_velocity.csv");
-    clearFile("quaternion.csv");
+    std::string flowAngVelFile = "flow_angular_velocity.csv";
+    std::string flowLinVelFile = "flow_linear_velocity.csv";
+    std::string flowQuaPosFile = "flow_quaternion_orientation.csv";
+
+    clearFile(flowAngVelFile);
+    clearFile(flowLinVelFile);
+    clearFile(flowQuaPosFile);
 
     double cx = 320.5;
     double cy = 240.5;
@@ -379,9 +381,9 @@ int main(int argc, char* argv[])
             xyzVelocity[1] = yyVelFilter.update(xyzVelocity[1]);
             xyzVelocity[2] = zzVelFilter.update(xyzVelocity[2]);
 
-            saveCvVecToFile("quaternion.csv", quatPose);
-            saveCvVecToFile("angular_velocity.csv", xyzAngles);
-            saveCvVecToFile("linear_velocity.csv", xyzVelocity);
+            saveCvVecToFile(flowQuaPosFile, quatPose);
+            saveCvVecToFile(flowAngVelFile, xyzAngles);
+            saveCvVecToFile(flowLinVelFile, xyzVelocity);
 
             std::cout << camPose << std::endl;
             std::cout << xyzVelocity << std::endl;

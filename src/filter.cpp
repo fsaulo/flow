@@ -5,7 +5,7 @@ class DCOffsetRemover {
 public:
   DCOffsetRemover(int windowSize) : windowSize_(windowSize), sum_(0) {}
 
-  double removeOffset(double sample) {
+  double RemoveOffset(double sample) {
     // Add the new sample to the sum
     sum_ += sample;
 
