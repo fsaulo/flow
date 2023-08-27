@@ -383,7 +383,7 @@ int main(int argc, char* argv[])
 
             saveCvVecToFile(flowQuaPosFile, quatPose);
             saveCvVecToFile(flowAngVelFile, xyzAngles);
-            saveCvVecToFile(flowQuaPosFile, xyzVelocity);
+            saveCvVecToFile(flowLinVelFile, xyzVelocity);
 
             std::cout << camPose << std::endl;
             std::cout << xyzVelocity << std::endl;
