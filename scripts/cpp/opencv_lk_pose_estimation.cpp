@@ -13,7 +13,9 @@
 #include <opencv2/video.hpp>
 #include <opencv2/calib3d.hpp>
 
+#ifdef MAVLINK_UDP_ENABLED
 #include <mavlink/common/mavlink.h>
+#endif
 
 #define PI 3.14159265358979323846
 
@@ -286,10 +288,12 @@ int main(int argc, char* argv[])
     DCOffsetRemover yAngFilter(20); 
     DCOffsetRemover zAngFilter(20); 
 
+#ifdef MAVLINK_UDP_ENABLED
     mavlink_channel_t channel = MAVLINK_COMM_0;
     mavlink_status_t mav_status;
     mavlink_message_t msg;
     mavlink_udp_port_t udp_port = open_udp("127.0.0.1", 14445);
+#endif
 
     while (video.read(currFrame))
     {
@@ -300,12 +304,12 @@ int main(int argc, char* argv[])
             cv::cvtColor(currFrame, currFrame, cv::COLOR_BGR2GRAY);
             cv::calcOpticalFlowPyrLK(prevFrame, currFrame, prevPoints, currPoints, status, error);
 
+#ifdef MAVLINK_UDP_ENABLED
             mavlink_msg_command_long_pack(MAVLINK_SYSTEM_ID, MAV_COMP_ID_ALL, &msg,
                                           target_system, target_component,
                                           MAV_CMD_SENSOR_OFFSETS, 0, 0, 0, 0, 0, 0, 0);
             
             receive_udp(udp_port, &msg, &mav_status);
-
             if (msg.msgid == MAVLINK_MSG_ID_HIGHRES_IMU) {
                 mavlink_highres_imu_t imu_data;
                 mavlink_msg_highres_imu_decode(&msg, &imu_data);
@@ -319,6 +323,7 @@ int main(int argc, char* argv[])
                 std::cout << "Angular Velocity Z: " << angular_velocity_z << " rad/s" << std::endl;
                 
             }
+#endif
 
             double sumMagnitude = 0.0;
             int count = 0;
@@ -476,7 +481,9 @@ int main(int argc, char* argv[])
     cv::destroyAllWindows();
     video.release();
     
+#ifdef MAVLINK_UDP_ENABLED
     close_udp(udp_port);
+#endif
 
     return 0;
 }
