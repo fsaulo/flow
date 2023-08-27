@@ -3,6 +3,7 @@
 #include <chrono>
 #include <thread>
 #include <iterator>
+#include <errno.h>
 
 #include <Eigen/Dense>
 
@@ -14,6 +15,8 @@
 #include <opencv2/calib3d.hpp>
 
 #ifdef MAVLINK_UDP_ENABLED
+#include <thread>
+#include <mutex>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -22,6 +25,8 @@
 #endif
 
 #define PI 3.14159265358979323846
+
+std::string g_incomming_pipeline;
 
 class DCOffsetRemover {
 public:
@@ -61,6 +66,36 @@ private:
   double movingSum_;
   std::deque<double> windowBuffer_;
 };  
+
+class LifoQueue {
+public:
+    LifoQueue(size_t limit) : limit_(limit) {}
+
+    void Push(const cv::Vec3f& value) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        // Wait until the queue size is less than the limit
+        cv_full_.wait(lock, [this]() { return queue_.size() < limit_; });
+        queue_.push(value);
+        cv_empty_.notify_one();
+    }
+
+    cv::Vec3f Pop() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        // Wait until the queue is not empty
+        cv_empty_.wait(lock, [this]() { return !queue_.empty(); });
+        cv::Vec3f value = queue_.front();
+        queue_.pop();
+        cv_full_.notify_one();
+        return value;
+    }
+
+private:
+    size_t limit_;
+    std::queue<cv::Vec3f> queue_;
+    std::mutex mutex_;
+    std::condition_variable cv_empty_;
+    std::condition_variable cv_full_;
+};
 
 template<typename T, int N>
 std::vector<T> cvVecToStdVector(const cv::Vec<T, N>& vect) { return std::vector<T>(vect.val, vect.val + N); }
@@ -190,26 +225,132 @@ void applyBarrelDistortion(cv::Mat& image, float k)
     image = distortedImage;
 }
 
-int main(int argc, char* argv[])
+#ifdef MAVLINK_UDP_ENABLED
+void mav_handle_heartbeat(const mavlink_message_t* message)
 {
+    mavlink_heartbeat_t heartbeat;
+    mavlink_msg_heartbeat_decode(message, &heartbeat);
 
-    const std::string keys =
-        "{ h help |      | print this help message }"
-        "{ @image | vtest.avi | path to image file }";
+    printf("[DEBUG] [mav_handle_heartbeat] Got heartbeat from ");
+    switch (heartbeat.autopilot) {
+        case MAV_AUTOPILOT_GENERIC:
+            printf("generic");
+            break;
+        case MAV_AUTOPILOT_ARDUPILOTMEGA:
+            printf("ArduPilot");
+            break;
+        case MAV_AUTOPILOT_PX4:
+            printf("PX4");
+            break;
+        default:
+            printf("other");
+            break;
+    }
+    printf(" autopilot\n");
+}
 
-    cv::CommandLineParser parser(argc, argv, keys);
-    std::string pipeline = parser.get<std::string>("@image");
-    if (!parser.check())
-    {
-        parser.printErrors();
-        return 0;
+void mav_handle_odometry(const mavlink_message_t* message)
+{
+    mavlink_global_position_int_t global_position_data;
+    mavlink_msg_global_position_int_decode(message, &global_position_data);
+
+    // Access and process global position data
+    int32_t latitude = global_position_data.lat;
+    int32_t longitude = global_position_data.lon;
+    int32_t altitude = global_position_data.alt;
+
+    // Process the global position data
+    std::cout << "[DEBUG] [mav_handle_odometry] got global_position_int:\n"
+              << "\tLatitude: " << latitude << std::endl
+              << "\tLongitude: " << longitude << std::endl
+              << "\tAltitude: " << altitude << std::endl;
+}
+
+void mav_receive_some(int socket_fd, 
+                  struct sockaddr_in* src_addr, 
+                  socklen_t* src_addr_len, 
+                  bool* src_addr_set)
+{
+    char buffer[2048];
+
+    const int ret = recvfrom( socket_fd, buffer, 
+            sizeof(buffer), 0, (struct sockaddr*)(src_addr), src_addr_len);
+
+    if (ret < 0) {
+        std::cerr << "[ERROR] recvfrom error: " << strerror(errno) << std::endl;
+    } else if (ret == 0) {
+        return;
+    } 
+
+    *src_addr_set = true;
+
+    mavlink_message_t message;
+    mavlink_status_t status;
+    for (int i = 0; i < ret; ++i) {
+        if (mavlink_parse_char(MAVLINK_COMM_0, buffer[i], &message, &status) == 1) {
+            switch (message.msgid) {
+            case MAVLINK_MSG_ID_HEARTBEAT:
+                mav_handle_heartbeat(&message);
+                break;
+            case MAVLINK_MSG_ID_GLOBAL_POSITION_INT:
+                mav_handle_odometry(&message);
+                break;
+            }
+        }
+    }
+}
+
+void mavlink_msg_callback(void) 
+{
+    mavlink_channel_t channel = MAVLINK_COMM_0;
+    mavlink_status_t mav_status;
+    mavlink_message_t msg;
+
+    int udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (udp_socket == -1) {
+        std::cerr << "Socket creation failed." << std::endl;
+        return;
     }
 
-    cv::VideoCapture video(pipeline, cv::CAP_GSTREAMER);
+    sockaddr_in server_address;
+    server_address.sin_family = AF_INET;
+    server_address.sin_addr.s_addr = inet_addr("127.0.0.1");
+    server_address.sin_port = htons(14445);
+    if (bind(udp_socket, (struct sockaddr*)&server_address, sizeof(server_address)) == -1) {
+        std::cerr << "Bind failed." << std::endl;
+        close(udp_socket);
+        return;
+    }
+
+    // We set a timeout at 100ms to prevent being stuck in recvfrom for too
+    // long and missing our chance to send some stuff.
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 100000;
+    if (setsockopt(udp_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        std::cerr << "setsockopt error: " << strerror(errno) << std::endl;
+        return;
+    }
+
+    while (true) {
+        struct sockaddr_in src_addr = {};
+        socklen_t src_addr_len = sizeof(src_addr);
+        bool src_addr_set = false;
+
+        mav_receive_some(udp_socket, &src_addr, &src_addr_len, &src_addr_set);
+    }
+
+    close(udp_socket);
+}
+#endif
+
+void lk_flow_callback(void)
+{
+    cv::VideoCapture video(g_incomming_pipeline, cv::CAP_GSTREAMER);
     if (!video.isOpened())
     {
         std::cout << "Failed to open the video file!\n";
-        return -1;
+        return;
     }
 
     cv::Mat prevFrame, currFrame;
@@ -292,28 +433,6 @@ int main(int argc, char* argv[])
     DCOffsetRemover yAngFilter(20); 
     DCOffsetRemover zAngFilter(20); 
 
-#ifdef MAVLINK_UDP_ENABLED
-    mavlink_channel_t channel = MAVLINK_COMM_0;
-    mavlink_status_t mav_status;
-    mavlink_message_t msg;
-
-    int udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
-    if (udp_socket == -1) {
-        std::cerr << "Socket creation failed." << std::endl;
-        return 1;
-    }
-
-    sockaddr_in server_address;
-    server_address.sin_family = AF_INET;
-    server_address.sin_addr.s_addr = inet_addr("127.0.0.1");
-    server_address.sin_port = htons(14445);
-    if (bind(udp_socket, (struct sockaddr*)&server_address, sizeof(server_address)) == -1) {
-        std::cerr << "Bind failed." << std::endl;
-        close(udp_socket);
-        return 1;
-    }
-#endif
-
     while (video.read(currFrame))
     {
         auto runtime = std::chrono::high_resolution_clock::now();
@@ -322,34 +441,6 @@ int main(int argc, char* argv[])
             cv::resize(currFrame, currFrame, size, 0, 0, cv::INTER_LINEAR);
             cv::cvtColor(currFrame, currFrame, cv::COLOR_BGR2GRAY);
             cv::calcOpticalFlowPyrLK(prevFrame, currFrame, prevPoints, currPoints, status, error);
-
-#ifdef MAVLINK_UDP_ENABLED
-            char buffer[512];
-            ssize_t recv_len = recvfrom(udp_socket, buffer, sizeof(buffer), 0, nullptr, nullptr);
-
-            cv::Vec3f xyzVelocityIMU = { 0., 0., 0. };
-            if (recv_len <= 0) {
-                std::cerr << "Error receiving data." << std::endl;
-                continue;
-            }
-
-            for (ssize_t i = 0; i < recv_len; ++i) {
-                if (mavlink_parse_char(MAVLINK_COMM_0, buffer[i], &msg, &mav_status)) {
-                    if (msg.msgid == MAVLINK_MSG_ID_ODOMETRY) {
-                        mavlink_odometry_t imu_data;
-                        mavlink_msg_odometry_decode(&msg, &imu_data);
-
-                        xyzVelocityIMU = { 
-                            imu_data.vx,
-                            imu_data.vy,
-                            imu_data.vz,
-                        };
-
-                        std::cout << xyzVelocityIMU << std::endl;
-                    }
-                }
-            }
-#endif
 
             double sumMagnitude = 0.0;
             int count = 0;
@@ -443,9 +534,8 @@ int main(int argc, char* argv[])
             saveCvVecToFile(flowAngVelFile, xyzAngles);
             saveCvVecToFile(flowLinVelFile, xyzVelocity);
 
-            std::cout << "[DEBUG] [lk_pose_estimation] Pos: " << xyzVelocity << std::endl;
-            std::cout << "[DEBUG] [lk_pose_estimation] Ori: " << xyzAngles << std::endl;
-            std::cout << "[DEBUG] [lk_pose_estimation] IMU: " << xyzVelocityIMU << std::endl;
+            std::cout << "[DEBUG] [lk_pose_estimation] position   : " << xyzVelocity << std::endl;
+            std::cout << "[DEBUG] [lk_pose_estimation] angular_vel: " << xyzAngles << std::endl;
 
             x += xyzVelocity[0];
             y += xyzVelocity[1];
@@ -508,10 +598,28 @@ int main(int argc, char* argv[])
 
     cv::destroyAllWindows();
     video.release();
-    
-#ifdef MAVLINK_UDP_ENABLED
-    close(udp_socket);
-#endif
+}
+
+int main(int argc, char* argv[])
+{
+
+    const std::string keys =
+        "{ h help |      | print this help message }"
+        "{ @image | vtest.avi | path to image file }";
+
+    cv::CommandLineParser parser(argc, argv, keys);
+    g_incomming_pipeline = parser.get<std::string>("@image");
+    if (!parser.check())
+    {
+        parser.printErrors();
+        return 0;
+    }
+
+    std::thread mavlink_thread(mavlink_msg_callback);
+    std::thread optical_flow_thread(lk_flow_callback);
+
+    mavlink_thread.join();
+    optical_flow_thread.join();
 
     return 0;
 }
