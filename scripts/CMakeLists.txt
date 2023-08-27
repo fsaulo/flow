@@ -9,8 +9,10 @@ file(GLOB_RECURSE PYTHON_SOURCES "*.py")
 
 find_package(OpenCV REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(MAVLink REQUIRED)
 
 include_directories(${EIGEN3_INCLUDE_DIRS})
+include_directories(${MAVLINK_INCLUDE_DIRS})
 
 foreach(CPP_SOURCE ${CPP_SOURCES})
     get_filename_component(CPP_TARGET_NAME ${CPP_SOURCE} NAME_WE)
@@ -23,6 +25,7 @@ foreach(CPP_SOURCE ${CPP_SOURCES})
         opencv_video
         opencv_videoio
         ${EIGEN3_LIBRARIES}
+        MAVLink::mavlink
     )
 endforeach()
 

@@ -13,6 +13,8 @@
 #include <opencv2/video.hpp>
 #include <opencv2/calib3d.hpp>
 
+#include <mavlink/common/mavlink.h>
+
 #define PI 3.14159265358979323846
 
 class DCOffsetRemover {
@@ -266,7 +268,7 @@ int main(int argc, char* argv[])
     cv::Mat lastVec = cv::Mat::zeros(3, 1, CV_64F);
 
     int loop_counter = 0;
-    int scaleFactor = 2;
+    int scaleFactor = 1;
     int scaleHeight = 100;
     int imx, imy = (int) prevX;
 
@@ -284,6 +286,11 @@ int main(int argc, char* argv[])
     DCOffsetRemover yAngFilter(20); 
     DCOffsetRemover zAngFilter(20); 
 
+    mavlink_channel_t channel = MAVLINK_COMM_0;
+    mavlink_status_t mav_status;
+    mavlink_message_t msg;
+    mavlink_udp_port_t udp_port = open_udp("127.0.0.1", 14445);
+
     while (video.read(currFrame))
     {
         auto runtime = std::chrono::high_resolution_clock::now();
@@ -292,6 +299,26 @@ int main(int argc, char* argv[])
             cv::resize(currFrame, currFrame, size, 0, 0, cv::INTER_LINEAR);
             cv::cvtColor(currFrame, currFrame, cv::COLOR_BGR2GRAY);
             cv::calcOpticalFlowPyrLK(prevFrame, currFrame, prevPoints, currPoints, status, error);
+
+            mavlink_msg_command_long_pack(MAVLINK_SYSTEM_ID, MAV_COMP_ID_ALL, &msg,
+                                          target_system, target_component,
+                                          MAV_CMD_SENSOR_OFFSETS, 0, 0, 0, 0, 0, 0, 0);
+            
+            receive_udp(udp_port, &msg, &mav_status);
+
+            if (msg.msgid == MAVLINK_MSG_ID_HIGHRES_IMU) {
+                mavlink_highres_imu_t imu_data;
+                mavlink_msg_highres_imu_decode(&msg, &imu_data);
+
+                double angular_velocity_x = imu_data.xgyro;
+                double angular_velocity_y = imu_data.ygyro;
+                double angular_velocity_z = imu_data.zgyro;
+
+                std::cout << "Angular Velocity X: " << angular_velocity_x << " rad/s" << std::endl;
+                std::cout << "Angular Velocity Y: " << angular_velocity_y << " rad/s" << std::endl;
+                std::cout << "Angular Velocity Z: " << angular_velocity_z << " rad/s" << std::endl;
+                
+            }
 
             double sumMagnitude = 0.0;
             int count = 0;
@@ -385,9 +412,7 @@ int main(int argc, char* argv[])
             saveCvVecToFile(flowAngVelFile, xyzAngles);
             saveCvVecToFile(flowLinVelFile, xyzVelocity);
 
-            std::cout << camPose << std::endl;
-            std::cout << xyzVelocity << std::endl;
-            std::cout << quatPose << std::endl;
+            std::cout << "[DEBUG] [lk_pose_estimation] Pos = " << xyzVelocity << std::endl;
 
             x += xyzVelocity[0];
             y += xyzVelocity[1];
@@ -450,6 +475,8 @@ int main(int argc, char* argv[])
 
     cv::destroyAllWindows();
     video.release();
+    
+    close_udp(udp_port);
 
     return 0;
 }
