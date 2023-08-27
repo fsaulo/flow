@@ -14,6 +14,10 @@
 #include <opencv2/calib3d.hpp>
 
 #ifdef MAVLINK_UDP_ENABLED
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 #include <mavlink/common/mavlink.h>
 #endif
 
@@ -292,7 +296,22 @@ int main(int argc, char* argv[])
     mavlink_channel_t channel = MAVLINK_COMM_0;
     mavlink_status_t mav_status;
     mavlink_message_t msg;
-    mavlink_udp_port_t udp_port = open_udp("127.0.0.1", 14445);
+
+    int udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (udp_socket == -1) {
+        std::cerr << "Socket creation failed." << std::endl;
+        return 1;
+    }
+
+    sockaddr_in server_address;
+    server_address.sin_family = AF_INET;
+    server_address.sin_addr.s_addr = inet_addr("127.0.0.1");
+    server_address.sin_port = htons(14445);
+    if (bind(udp_socket, (struct sockaddr*)&server_address, sizeof(server_address)) == -1) {
+        std::cerr << "Bind failed." << std::endl;
+        close(udp_socket);
+        return 1;
+    }
 #endif
 
     while (video.read(currFrame))
@@ -305,23 +324,30 @@ int main(int argc, char* argv[])
             cv::calcOpticalFlowPyrLK(prevFrame, currFrame, prevPoints, currPoints, status, error);
 
 #ifdef MAVLINK_UDP_ENABLED
-            mavlink_msg_command_long_pack(MAVLINK_SYSTEM_ID, MAV_COMP_ID_ALL, &msg,
-                                          target_system, target_component,
-                                          MAV_CMD_SENSOR_OFFSETS, 0, 0, 0, 0, 0, 0, 0);
-            
-            receive_udp(udp_port, &msg, &mav_status);
-            if (msg.msgid == MAVLINK_MSG_ID_HIGHRES_IMU) {
-                mavlink_highres_imu_t imu_data;
-                mavlink_msg_highres_imu_decode(&msg, &imu_data);
+            char buffer[512];
+            ssize_t recv_len = recvfrom(udp_socket, buffer, sizeof(buffer), 0, nullptr, nullptr);
 
-                double angular_velocity_x = imu_data.xgyro;
-                double angular_velocity_y = imu_data.ygyro;
-                double angular_velocity_z = imu_data.zgyro;
+            cv::Vec3f xyzVelocityIMU = { 0., 0., 0. };
+            if (recv_len <= 0) {
+                std::cerr << "Error receiving data." << std::endl;
+                continue;
+            }
 
-                std::cout << "Angular Velocity X: " << angular_velocity_x << " rad/s" << std::endl;
-                std::cout << "Angular Velocity Y: " << angular_velocity_y << " rad/s" << std::endl;
-                std::cout << "Angular Velocity Z: " << angular_velocity_z << " rad/s" << std::endl;
-                
+            for (ssize_t i = 0; i < recv_len; ++i) {
+                if (mavlink_parse_char(MAVLINK_COMM_0, buffer[i], &msg, &mav_status)) {
+                    if (msg.msgid == MAVLINK_MSG_ID_ODOMETRY) {
+                        mavlink_odometry_t imu_data;
+                        mavlink_msg_odometry_decode(&msg, &imu_data);
+
+                        xyzVelocityIMU = { 
+                            imu_data.vx,
+                            imu_data.vy,
+                            imu_data.vz,
+                        };
+
+                        std::cout << xyzVelocityIMU << std::endl;
+                    }
+                }
             }
 #endif
 
@@ -417,7 +443,9 @@ int main(int argc, char* argv[])
             saveCvVecToFile(flowAngVelFile, xyzAngles);
             saveCvVecToFile(flowLinVelFile, xyzVelocity);
 
-            std::cout << "[DEBUG] [lk_pose_estimation] Pos = " << xyzVelocity << std::endl;
+            std::cout << "[DEBUG] [lk_pose_estimation] Pos: " << xyzVelocity << std::endl;
+            std::cout << "[DEBUG] [lk_pose_estimation] Ori: " << xyzAngles << std::endl;
+            std::cout << "[DEBUG] [lk_pose_estimation] IMU: " << xyzVelocityIMU << std::endl;
 
             x += xyzVelocity[0];
             y += xyzVelocity[1];
@@ -482,7 +510,7 @@ int main(int argc, char* argv[])
     video.release();
     
 #ifdef MAVLINK_UDP_ENABLED
-    close_udp(udp_port);
+    close(udp_socket);
 #endif
 
     return 0;
