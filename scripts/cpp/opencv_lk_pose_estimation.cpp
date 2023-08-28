@@ -1,104 +1,15 @@
-#include <iostream>
 #include <fstream>
 #include <chrono>
 #include <thread>
 #include <iterator>
-#include <errno.h>
 
 #include <Eigen/Dense>
 
-#include <opencv2/core.hpp>
-#include <opencv2/core/eigen.hpp>
-#include <opencv2/opencv.hpp>
-#include <opencv2/videoio.hpp>
-#include <opencv2/video.hpp>
-#include <opencv2/calib3d.hpp>
-
+#include "cpp/include/utils/OpencvInterface.h"
+#include "cpp/include/utils/DCOffsetFilter.h"
 #ifdef MAVLINK_UDP_ENABLED
-#include <thread>
-#include <mutex>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-#include <mavlink/common/mavlink.h>
+#include "cpp/include/utils/MavlinkInterface.h"
 #endif
-
-#define PI 3.14159265358979323846
-
-std::string g_incomming_pipeline;
-
-class DCOffsetRemover {
-public:
-  DCOffsetRemover(int windowSize) : windowSize_(windowSize), sum_(0), movingSum_(0) {}
-
-  double removeOffset(double sample) {
-    if (windowSize_ == 0) 
-        return sample;
-
-    // Add the new sample to the sum
-    sum_ += sample;
-
-    // Add the sample to the window buffer
-    windowBuffer_.push_back(sample);
-
-    // If the window buffer is larger than the specified window size,
-    // remove the oldest sample from the sum and the buffer
-    if (windowBuffer_.size() > windowSize_) {
-      sum_ -= windowBuffer_.front();
-      windowBuffer_.pop_front();
-    }
-
-    // Calculate the average and subtract it from the sample
-    double average = sum_ / windowBuffer_.size();
-    return sample - average;
-  }
-
-  double update(double sample) {
-      double value = removeOffset(sample);
-      movingSum_ += value;
-      return movingSum_ / windowBuffer_.size();
-  }
-
-private:
-  int windowSize_;
-  double sum_;
-  double movingSum_;
-  std::deque<double> windowBuffer_;
-};  
-
-class LifoQueue {
-public:
-    LifoQueue(size_t limit) : limit_(limit) {}
-
-    void Push(const cv::Vec3f& value) {
-        std::unique_lock<std::mutex> lock(mutex_);
-        // Wait until the queue size is less than the limit
-        cv_full_.wait(lock, [this]() { return queue_.size() < limit_; });
-        queue_.push(value);
-        cv_empty_.notify_one();
-    }
-
-    cv::Vec3f Pop() {
-        std::unique_lock<std::mutex> lock(mutex_);
-        // Wait until the queue is not empty
-        cv_empty_.wait(lock, [this]() { return !queue_.empty(); });
-        cv::Vec3f value = queue_.front();
-        queue_.pop();
-        cv_full_.notify_one();
-        return value;
-    }
-
-private:
-    size_t limit_;
-    std::queue<cv::Vec3f> queue_;
-    std::mutex mutex_;
-    std::condition_variable cv_empty_;
-    std::condition_variable cv_full_;
-};
-
-template<typename T, int N>
-std::vector<T> cvVecToStdVector(const cv::Vec<T, N>& vect) { return std::vector<T>(vect.val, vect.val + N); }
 
 template<typename T, int N>
 void saveCvVecToFile(std::string& filename, const cv::Vec<T, N>& vect)
@@ -168,7 +79,6 @@ cv::Vec4f rotationMatrixToQuaternion(const cv::Mat& rotationMatrix)
 
 cv::Vec3f rotationMatrixToEulerAngles(cv::Mat& R)
 {
- 
     // assert(isValidRotationMatrix(R));
  
     float sy = sqrt(R.at<double>(0,0) * R.at<double>(0,0) +  R.at<double>(1,0) * R.at<double>(1,0) );
@@ -249,7 +159,7 @@ void mav_handle_heartbeat(const mavlink_message_t* message)
     printf(" autopilot\n");
 }
 
-void mav_handle_odometry(const mavlink_message_t* message)
+void mav_handle_global_position_int(const mavlink_message_t* message)
 {
     mavlink_global_position_int_t global_position_data;
     mavlink_msg_global_position_int_decode(message, &global_position_data);
@@ -260,10 +170,20 @@ void mav_handle_odometry(const mavlink_message_t* message)
     int32_t altitude = global_position_data.alt;
 
     // Process the global position data
-    std::cout << "[DEBUG] [mav_handle_odometry] got global_position_int:\n"
+    std::cout << "[DEBUG] [mav_handle_odometry] Got global_position_int:\n"
               << "\tLatitude: " << latitude << std::endl
               << "\tLongitude: " << longitude << std::endl
               << "\tAltitude: " << altitude << std::endl;
+}
+
+void mav_handle_attitude(const mavlink_message_t* message)
+{
+    std::cout << "[DEBUG] attitude" << std::endl;
+}
+
+void mav_handle_local_position_ned(const mavlink_message_t* message)
+{
+    std::cout << "[DEBUG] local_position_ned" << std::endl;
 }
 
 void mav_receive_some(int socket_fd, 
@@ -293,7 +213,13 @@ void mav_receive_some(int socket_fd,
                 mav_handle_heartbeat(&message);
                 break;
             case MAVLINK_MSG_ID_GLOBAL_POSITION_INT:
-                mav_handle_odometry(&message);
+                mav_handle_global_position_int(&message);
+                break;
+            case MAVLINK_MSG_ID_LOCAL_POSITION_NED:
+                mav_handle_local_position_ned(&message);
+                break;
+            case MAVLINK_MSG_ID_ATTITUDE:
+                mav_handle_attitude(&message);
                 break;
             }
         }
@@ -344,9 +270,9 @@ void mavlink_msg_callback(void)
 }
 #endif
 
-void lk_flow_callback(void)
+void lk_estimator_callback(const std::string& pipeline)
 {
-    cv::VideoCapture video(g_incomming_pipeline, cv::CAP_GSTREAMER);
+    cv::VideoCapture video(pipeline, cv::CAP_GSTREAMER);
     if (!video.isOpened())
     {
         std::cout << "Failed to open the video file!\n";
@@ -421,17 +347,17 @@ void lk_flow_callback(void)
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    DCOffsetRemover xVelFilter(5); 
-    DCOffsetRemover yVelFilter(5); 
-    DCOffsetRemover zVelFilter(5); 
+    DCOffsetFilter xVelFilter(5); 
+    DCOffsetFilter yVelFilter(5); 
+    DCOffsetFilter zVelFilter(5); 
 
-    DCOffsetRemover xxVelFilter(20); 
-    DCOffsetRemover yyVelFilter(20); 
-    DCOffsetRemover zzVelFilter(20); 
+    DCOffsetFilter xxVelFilter(20); 
+    DCOffsetFilter yyVelFilter(20); 
+    DCOffsetFilter zzVelFilter(20); 
 
-    DCOffsetRemover xAngFilter(20); 
-    DCOffsetRemover yAngFilter(20); 
-    DCOffsetRemover zAngFilter(20); 
+    DCOffsetFilter xAngFilter(20); 
+    DCOffsetFilter yAngFilter(20); 
+    DCOffsetFilter zAngFilter(20); 
 
     while (video.read(currFrame))
     {
@@ -602,24 +528,27 @@ void lk_flow_callback(void)
 
 int main(int argc, char* argv[])
 {
-
     const std::string keys =
         "{ h help |      | print this help message }"
         "{ @image | vtest.avi | path to image file }";
 
     cv::CommandLineParser parser(argc, argv, keys);
-    g_incomming_pipeline = parser.get<std::string>("@image");
-    if (!parser.check())
-    {
+    std::string pipeline_stream = parser.get<std::string>("@image");
+    if (!parser.check()) {
         parser.printErrors();
         return 0;
     }
 
+    std::thread optical_flow_thread;
+    optical_flow_thread = std::thread(lk_estimator_callback, std::cref(pipeline_stream));
+#ifdef MAVLINK_UDP_ENABLED
     std::thread mavlink_thread(mavlink_msg_callback);
-    std::thread optical_flow_thread(lk_flow_callback);
+#endif
 
-    mavlink_thread.join();
     optical_flow_thread.join();
+#ifdef MAVLINK_UDP_ENABLED
+    mavlink_thread.join();
+#endif
 
     return 0;
 }
