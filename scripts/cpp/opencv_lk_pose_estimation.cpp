@@ -1,4 +1,3 @@
-#include <iostream>
 #include <fstream>
 #include <chrono>
 #include <thread>
@@ -6,56 +5,11 @@
 
 #include <Eigen/Dense>
 
-#include <opencv2/core.hpp>
-#include <opencv2/core/eigen.hpp>
-#include <opencv2/opencv.hpp>
-#include <opencv2/videoio.hpp>
-#include <opencv2/video.hpp>
-#include <opencv2/calib3d.hpp>
-
-#define PI 3.14159265358979323846
-
-class DCOffsetRemover {
-public:
-  DCOffsetRemover(int windowSize) : windowSize_(windowSize), sum_(0), movingSum_(0) {}
-
-  double removeOffset(double sample) {
-    if (windowSize_ == 0) 
-        return sample;
-
-    // Add the new sample to the sum
-    sum_ += sample;
-
-    // Add the sample to the window buffer
-    windowBuffer_.push_back(sample);
-
-    // If the window buffer is larger than the specified window size,
-    // remove the oldest sample from the sum and the buffer
-    if (windowBuffer_.size() > windowSize_) {
-      sum_ -= windowBuffer_.front();
-      windowBuffer_.pop_front();
-    }
-
-    // Calculate the average and subtract it from the sample
-    double average = sum_ / windowBuffer_.size();
-    return sample - average;
-  }
-
-  double update(double sample) {
-      double value = removeOffset(sample);
-      movingSum_ += value;
-      return movingSum_ / windowBuffer_.size();
-  }
-
-private:
-  int windowSize_;
-  double sum_;
-  double movingSum_;
-  std::deque<double> windowBuffer_;
-};  
-
-template<typename T, int N>
-std::vector<T> cvVecToStdVector(const cv::Vec<T, N>& vect) { return std::vector<T>(vect.val, vect.val + N); }
+#include "cpp/include/utils/OpencvInterface.h"
+#include "cpp/include/utils/DCOffsetFilter.h"
+#ifdef MAVLINK_UDP_ENABLED
+#include "cpp/include/utils/MavlinkInterface.h"
+#endif
 
 template<typename T, int N>
 void saveCvVecToFile(std::string& filename, const cv::Vec<T, N>& vect)
@@ -125,7 +79,6 @@ cv::Vec4f rotationMatrixToQuaternion(const cv::Mat& rotationMatrix)
 
 cv::Vec3f rotationMatrixToEulerAngles(cv::Mat& R)
 {
- 
     // assert(isValidRotationMatrix(R));
  
     float sy = sqrt(R.at<double>(0,0) * R.at<double>(0,0) +  R.at<double>(1,0) * R.at<double>(1,0) );
@@ -182,26 +135,148 @@ void applyBarrelDistortion(cv::Mat& image, float k)
     image = distortedImage;
 }
 
-int main(int argc, char* argv[])
+#ifdef MAVLINK_UDP_ENABLED
+void mav_handle_heartbeat(const mavlink_message_t* message)
 {
+    mavlink_heartbeat_t heartbeat;
+    mavlink_msg_heartbeat_decode(message, &heartbeat);
 
-    const std::string keys =
-        "{ h help |      | print this help message }"
-        "{ @image | vtest.avi | path to image file }";
+    printf("[DEBUG] [mav_handle_heartbeat] Got heartbeat from ");
+    switch (heartbeat.autopilot) {
+        case MAV_AUTOPILOT_GENERIC:
+            printf("generic");
+            break;
+        case MAV_AUTOPILOT_ARDUPILOTMEGA:
+            printf("ArduPilot");
+            break;
+        case MAV_AUTOPILOT_PX4:
+            printf("PX4");
+            break;
+        default:
+            printf("other");
+            break;
+    }
+    printf(" autopilot\n");
+}
 
-    cv::CommandLineParser parser(argc, argv, keys);
-    std::string pipeline = parser.get<std::string>("@image");
-    if (!parser.check())
-    {
-        parser.printErrors();
-        return 0;
+void mav_handle_global_position_int(const mavlink_message_t* message)
+{
+    mavlink_global_position_int_t global_position_data;
+    mavlink_msg_global_position_int_decode(message, &global_position_data);
+
+    // Access and process global position data
+    int32_t latitude = global_position_data.lat;
+    int32_t longitude = global_position_data.lon;
+    int32_t altitude = global_position_data.alt;
+
+    // Process the global position data
+    std::cout << "[DEBUG] [mav_handle_odometry] Got global_position_int:\n"
+              << "\tLatitude: " << latitude << std::endl
+              << "\tLongitude: " << longitude << std::endl
+              << "\tAltitude: " << altitude << std::endl;
+}
+
+void mav_handle_attitude(const mavlink_message_t* message)
+{
+    std::cout << "[DEBUG] attitude" << std::endl;
+}
+
+void mav_handle_local_position_ned(const mavlink_message_t* message)
+{
+    std::cout << "[DEBUG] local_position_ned" << std::endl;
+}
+
+void mav_receive_some(int socket_fd, 
+                  struct sockaddr_in* src_addr, 
+                  socklen_t* src_addr_len, 
+                  bool* src_addr_set)
+{
+    char buffer[2048];
+
+    const int ret = recvfrom( socket_fd, buffer, 
+            sizeof(buffer), 0, (struct sockaddr*)(src_addr), src_addr_len);
+
+    if (ret < 0) {
+        std::cerr << "[ERROR] recvfrom error: " << strerror(errno) << std::endl;
+    } else if (ret == 0) {
+        return;
+    } 
+
+    *src_addr_set = true;
+
+    mavlink_message_t message;
+    mavlink_status_t status;
+    for (int i = 0; i < ret; ++i) {
+        if (mavlink_parse_char(MAVLINK_COMM_0, buffer[i], &message, &status) == 1) {
+            switch (message.msgid) {
+            case MAVLINK_MSG_ID_HEARTBEAT:
+                mav_handle_heartbeat(&message);
+                break;
+            case MAVLINK_MSG_ID_GLOBAL_POSITION_INT:
+                mav_handle_global_position_int(&message);
+                break;
+            case MAVLINK_MSG_ID_LOCAL_POSITION_NED:
+                mav_handle_local_position_ned(&message);
+                break;
+            case MAVLINK_MSG_ID_ATTITUDE:
+                mav_handle_attitude(&message);
+                break;
+            }
+        }
+    }
+}
+
+void mavlink_msg_callback(void) 
+{
+    mavlink_channel_t channel = MAVLINK_COMM_0;
+    mavlink_status_t mav_status;
+    mavlink_message_t msg;
+
+    int udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (udp_socket == -1) {
+        std::cerr << "Socket creation failed." << std::endl;
+        return;
     }
 
+    sockaddr_in server_address;
+    server_address.sin_family = AF_INET;
+    server_address.sin_addr.s_addr = inet_addr("127.0.0.1");
+    server_address.sin_port = htons(14445);
+    if (bind(udp_socket, (struct sockaddr*)&server_address, sizeof(server_address)) == -1) {
+        std::cerr << "Bind failed." << std::endl;
+        close(udp_socket);
+        return;
+    }
+
+    // We set a timeout at 100ms to prevent being stuck in recvfrom for too
+    // long and missing our chance to send some stuff.
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 100000;
+    if (setsockopt(udp_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        std::cerr << "setsockopt error: " << strerror(errno) << std::endl;
+        return;
+    }
+
+    while (true) {
+        struct sockaddr_in src_addr = {};
+        socklen_t src_addr_len = sizeof(src_addr);
+        bool src_addr_set = false;
+
+        mav_receive_some(udp_socket, &src_addr, &src_addr_len, &src_addr_set);
+    }
+
+    close(udp_socket);
+}
+#endif
+
+void lk_estimator_callback(const std::string& pipeline)
+{
     cv::VideoCapture video(pipeline, cv::CAP_GSTREAMER);
     if (!video.isOpened())
     {
         std::cout << "Failed to open the video file!\n";
-        return -1;
+        return;
     }
 
     cv::Mat prevFrame, currFrame;
@@ -266,23 +341,23 @@ int main(int argc, char* argv[])
     cv::Mat lastVec = cv::Mat::zeros(3, 1, CV_64F);
 
     int loop_counter = 0;
-    int scaleFactor = 2;
+    int scaleFactor = 1;
     int scaleHeight = 100;
     int imx, imy = (int) prevX;
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    DCOffsetRemover xVelFilter(5); 
-    DCOffsetRemover yVelFilter(5); 
-    DCOffsetRemover zVelFilter(5); 
+    DCOffsetFilter xVelFilter(5); 
+    DCOffsetFilter yVelFilter(5); 
+    DCOffsetFilter zVelFilter(5); 
 
-    DCOffsetRemover xxVelFilter(20); 
-    DCOffsetRemover yyVelFilter(20); 
-    DCOffsetRemover zzVelFilter(20); 
+    DCOffsetFilter xxVelFilter(20); 
+    DCOffsetFilter yyVelFilter(20); 
+    DCOffsetFilter zzVelFilter(20); 
 
-    DCOffsetRemover xAngFilter(20); 
-    DCOffsetRemover yAngFilter(20); 
-    DCOffsetRemover zAngFilter(20); 
+    DCOffsetFilter xAngFilter(20); 
+    DCOffsetFilter yAngFilter(20); 
+    DCOffsetFilter zAngFilter(20); 
 
     while (video.read(currFrame))
     {
@@ -385,9 +460,8 @@ int main(int argc, char* argv[])
             saveCvVecToFile(flowAngVelFile, xyzAngles);
             saveCvVecToFile(flowLinVelFile, xyzVelocity);
 
-            std::cout << camPose << std::endl;
-            std::cout << xyzVelocity << std::endl;
-            std::cout << quatPose << std::endl;
+            std::cout << "[DEBUG] [lk_pose_estimation] position   : " << xyzVelocity << std::endl;
+            std::cout << "[DEBUG] [lk_pose_estimation] angular_vel: " << xyzAngles << std::endl;
 
             x += xyzVelocity[0];
             y += xyzVelocity[1];
@@ -450,6 +524,31 @@ int main(int argc, char* argv[])
 
     cv::destroyAllWindows();
     video.release();
+}
+
+int main(int argc, char* argv[])
+{
+    const std::string keys =
+        "{ h help |      | print this help message }"
+        "{ @image | vtest.avi | path to image file }";
+
+    cv::CommandLineParser parser(argc, argv, keys);
+    std::string pipeline_stream = parser.get<std::string>("@image");
+    if (!parser.check()) {
+        parser.printErrors();
+        return 0;
+    }
+
+    std::thread optical_flow_thread;
+    optical_flow_thread = std::thread(lk_estimator_callback, std::cref(pipeline_stream));
+#ifdef MAVLINK_UDP_ENABLED
+    std::thread mavlink_thread(mavlink_msg_callback);
+#endif
+
+    optical_flow_thread.join();
+#ifdef MAVLINK_UDP_ENABLED
+    mavlink_thread.join();
+#endif
 
     return 0;
 }
