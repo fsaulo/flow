@@ -1,5 +1,5 @@
-#ifndef OPENCV_INTERFACE_H
-#define OPENCV_INTERFACE_H
+#ifndef FLOW_OPENCV_INTERFACE_H
+#define FLOW_OPENCV_INTERFACE_H
 
 #include <opencv2/core.hpp>
 #include <opencv2/core/eigen.hpp>
@@ -22,4 +22,4 @@ bool isValidRotationMatrix(const cv::Mat& rotationMatrix);
 cv::Vec4f rotationMatrixToQuaternion(const cv::Mat& rotationMatrix);
 cv::Vec3f rotationMatrixToEulerAngles(cv::Mat& R);
 
-#endif // OPENCV_INTERFACE_H
+#endif // FLOW_OPENCV_INTERFACE_H
