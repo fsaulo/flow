@@ -10,12 +10,6 @@ include_directories(
     utils
 )
 
-add_executable(estimator
-    main.cpp
-    Estimator.cpp
-    Estimator.h
-)
-
 message("Building 3rd party")
 add_subdirectory(lib)
 add_subdirectory(modules)
@@ -23,6 +17,13 @@ add_subdirectory(modules)
 find_package(OpenCV REQUIRED)
 find_package(Eigen3 REQUIRED)
 
+add_executable(estimator
+    main.cpp
+    Estimator.cpp
+    Estimator.h
+    utils/DCOffsetFilter.cpp
+    utils/DCOffsetFilter.h
+)
 
 target_compile_options(estimator PRIVATE
     -Wno-address-of-packed-member

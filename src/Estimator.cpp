@@ -5,6 +5,7 @@
 
 #include "opencv/CvInterface.h"
 #include "gcs/GCSMavlink.h"
+#include "utils/DCOffsetFilter.h"
 
 #include "Estimator.h"
 
@@ -113,17 +114,17 @@ void EstimatorCallback(const std::string& pipeline)
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    // DCOffsetFilter xVelFilter(5); 
-    // DCOffsetFilter yVelFilter(5); 
-    // DCOffsetFilter zVelFilter(5); 
-    //
-    // DCOffsetFilter xxVelFilter(20); 
-    // DCOffsetFilter yyVelFilter(20); 
-    // DCOffsetFilter zzVelFilter(20); 
-    //
-    // DCOffsetFilter xAngFilter(20); 
-    // DCOffsetFilter yAngFilter(20); 
-    // DCOffsetFilter zAngFilter(20); 
+    DCOffsetFilter xVelFilter(5); 
+    DCOffsetFilter yVelFilter(5); 
+    DCOffsetFilter zVelFilter(5); 
+
+    DCOffsetFilter xxVelFilter(20); 
+    DCOffsetFilter yyVelFilter(20); 
+    DCOffsetFilter zzVelFilter(20); 
+
+    DCOffsetFilter xAngFilter(20); 
+    DCOffsetFilter yAngFilter(20); 
+    DCOffsetFilter zAngFilter(20); 
 
     while (video.read(currFrame))
     {
@@ -198,9 +199,9 @@ void EstimatorCallback(const std::string& pipeline)
             cv::Mat cam_t_img = K.inv() * (tvec) * dt * 0.5;
             cv::Mat cam_T_img = cv::Mat::eye(4, 4, CV_64F);
 
-            // cam_t_img.at<double>(0) = xVelFilter.removeOffset(cam_t_img.at<double>(0)) * -1;
-            // cam_t_img.at<double>(1) = yVelFilter.removeOffset(cam_t_img.at<double>(1)) * -1;
-            // cam_t_img.at<double>(2) = zVelFilter.removeOffset(cam_t_img.at<double>(2));
+            cam_t_img.at<double>(0) = xVelFilter.removeOffset(cam_t_img.at<double>(0)) * -1;
+            cam_t_img.at<double>(1) = yVelFilter.removeOffset(cam_t_img.at<double>(1)) * -1;
+            cam_t_img.at<double>(2) = zVelFilter.removeOffset(cam_t_img.at<double>(2));
 
             cam_R_img.copyTo(cam_T_img(cv::Rect(0, 0, 3, 3)));
             cam_t_img.copyTo(cam_T_img(cv::Rect(3, 0, 1, 3)));
@@ -214,13 +215,13 @@ void EstimatorCallback(const std::string& pipeline)
             cv::Vec3f xyzAngles = flow::opencv::rotationMatrixToEulerAngles(cam_R_img);
             cv::Vec3f xyzVelocity = accVelocity;
 
-            // xyzAngles[0] = xAngFilter.update(xyzAngles[0]);
-            // xyzAngles[1] = yAngFilter.update(xyzAngles[1]);
-            // xyzAngles[2] = zAngFilter.update(xyzAngles[2]) * -1;
-            //
-            // xyzVelocity[0] = xxVelFilter.update(xyzVelocity[0]);
-            // xyzVelocity[1] = yyVelFilter.update(xyzVelocity[1]);
-            // xyzVelocity[2] = zzVelFilter.update(xyzVelocity[2]);
+            xyzAngles[0] = xAngFilter.update(xyzAngles[0]);
+            xyzAngles[1] = yAngFilter.update(xyzAngles[1]);
+            xyzAngles[2] = zAngFilter.update(xyzAngles[2]) * -1;
+
+            xyzVelocity[0] = xxVelFilter.update(xyzVelocity[0]);
+            xyzVelocity[1] = yyVelFilter.update(xyzVelocity[1]);
+            xyzVelocity[2] = zzVelFilter.update(xyzVelocity[2]);
 
             flow::opencv::saveCvVecToFile<float, 4>(flowQuaPosFile, quatPose);
             flow::opencv::saveCvVecToFile<float, 3>(flowAngVelFile, xyzAngles);

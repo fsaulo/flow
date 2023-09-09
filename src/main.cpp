@@ -18,4 +18,7 @@ int main(int argc, char* argv[])
 
     std::thread optical_flow_thread;
     optical_flow_thread = std::thread(EstimatorCallback, std::cref(pipeline_stream));
+    optical_flow_thread.join();
+
+    return 0;
 }

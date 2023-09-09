@@ -9,20 +9,6 @@ add_library(CvInterface SHARED
     CvInterface.h
 )
 
-add_executable(main
-    main.cpp
-)
-
-target_link_libraries(main
-    opencv_core 
-    opencv_highgui 
-    opencv_imgproc 
-    opencv_video
-    opencv_videoio
-    CvInterface
-)
-
-
 target_include_directories(CvInterface PUBLIC
     ${EIGEN3_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}
