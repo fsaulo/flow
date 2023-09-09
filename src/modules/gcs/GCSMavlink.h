@@ -5,45 +5,81 @@
 
 #include "UDPLink.h"
 
+enum class GCSMessageType {
+    kUnknown = 0,
+    kHeartbeat,
+    kGlobalPositionInt,
+    kAttitude,
+    kLocalPositonNed
+};
+
+enum class GCSMessageStatus {
+    kMessageOk = 0,
+    kMessageUndefined,
+    kMessageError,
+    kMessageIncomplete
+};
+
+typedef struct GCSPosition {
+   double x;
+   double y;
+   double z;
+} gcs_local_position_t;
+
+typedef struct GCSGlobalPosition {
+    uint32_t latitude;
+    uint32_t longitude;
+    uint32_t altitude;
+} gcs_global_position_t;
+
+typedef struct GCSAttitude {
+    double   linear_velocity;
+    double   angluar_velocity;
+    double   yaw;
+    double   pitch;
+    double   roll;
+} gcs_attitude_t;
+
+typedef struct GCSAttitudeQuaternion {
+    double   qw;
+    double   qx;
+    double   qy;
+    double   qz;
+} gcs_attitude_quaternion_t;
+
+struct GCSResult {
+    uint8_t  autopilot;
+
+    GCSMessageType   type;
+    GCSMessageStatus message_status;
+
+    gcs_local_position_t local_position;
+    gcs_global_position_t global_position;
+    gcs_attitude_t attitude;
+    gcs_attitude_quaternion_t attitude_quaternion;
+};
+
+
 class GCSMavlink
 {
-private:
-    void handle_heartbeat(const mavlink_message_t* message);
-    void handle_global_position_int(const mavlink_message_t* message);
-    void handle_attitude(const mavlink_message_t* message);
-    void handle_local_position_ned(const mavlink_message_t* message);
-
-    UDPLink m_Socket;
 public:
-    enum class GCSMessageType {
-        kHeartbeat = 0,
-        kGlobalPositionInt,
-        kAttitude,
-        kLocalPositonNed
-    };
-
-    struct GCSResult {
-        GCSMessageType type;
-        uint8_t autopilot;
-        uint32_t latitude;
-        uint32_t longitude;
-        uint32_t altitude;
-        double   linear_velocity;
-        double   angluar_velocity;
-        double   yaw;
-        double   pitch;
-        double   roll;
-        double   qw;
-        double   qx;
-        double   qy;
-        double   qz;
-    }
 
     GCSMavlink();
 
     ~GCSMavlink();
 
-    GCSResult ReceiveSome() const;
-}
+    size_t ReceiveSome(char *buffer);
+    GCSResult ParseMessage(const char* buffer, const size_t index) const;
+
+
+private:
+    GCSResult handle_heartbeat(const mavlink_message_t& message) const;
+    GCSResult handle_global_position_int(const mavlink_message_t& message) const;
+    GCSResult handle_attitude(const mavlink_message_t& message) const;
+    GCSResult handle_local_position_ned(const mavlink_message_t& message) const;
+
+    UDPLink m_Socket;
+};
+
 
 #endif // FLOW_GCS_MAVLINK_H
