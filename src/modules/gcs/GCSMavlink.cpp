@@ -104,6 +104,16 @@ GCSResult GCSMavlink::handle_global_position_int(const mavlink_message_t& messag
     return result;
 }
 
+GCSResult GCSMavlink::handle_attitude(const mavlink_message_t& message) const
+{
+    printf("Not implemented\n");
+
+    GCSResult result;
+    result.message_status = GCSMessageStatus::kMessageUndefined;
+
+    return result;
+}
+
 GCSResult GCSMavlink::handle_local_position_ned(const mavlink_message_t& message) const
 {
     printf("Not implemented\n");

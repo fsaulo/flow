@@ -3,10 +3,10 @@
 
 #include <iostream>
 
-namespace estimator {
+#include "params.h"
 
-constexpr double pi { 3.14159265358979 }
-
-};
+void ClearFile(std::string& filename);
+void EstimatorCallback(const std::string& pipeline);
+void MavMessageCallback(void);
 
 #endif // LK_ESTIMATOR_H

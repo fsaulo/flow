@@ -1,28 +1,48 @@
 cmake_minimum_required(VERSION 3.14)
 project(flow LANGUAGES CXX)
 
+set(FLOW_SRCS)
+
 # Split the code into separete submodules, each containing
 # libraries, tests, modules and other optional modules
-set(FLOW_SUBDIRS
+include_directories(
     modules
-    # utils
-    # containers
+    utils
 )
 
-set(FLOW_SRCS)
+add_executable(estimator
+    main.cpp
+    Estimator.cpp
+    Estimator.h
+)
 
 message("Building 3rd party")
 add_subdirectory(lib)
+add_subdirectory(modules)
 
-# assemble core libaries
-foreach(subdir ${FLOW_SUBDIRS})
-    # Build convenience libraries
-    file(GLOB_RECURSE subdir_srcs "${subdir}/*.cpp" "${subdir}/*.h")
-	# file(GLOB subdir_test_files "${subdir}/tests/*")
-	# list(REMOVE_ITEM subdir_srcs ${subdir_test_files})
-    set(${subdir}_SRCS ${subdir_srcs})
+find_package(OpenCV REQUIRED)
+find_package(Eigen3 REQUIRED)
 
-    # Build local library and tests
-    message(STATUS "Building ${subdir}")
-    add_subdirectory(${subdir})
-endforeach(subdir)
+
+target_compile_options(estimator PRIVATE
+    -Wno-address-of-packed-member
+)
+
+target_include_directories(estimator PUBLIC
+    ${EIGEN3_INCLUDE_DIRS}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_BINARY_DIR}/src/lib/mavlink/include
+)
+
+target_link_libraries(estimator PRIVATE 
+    CvInterface
+    GCSMavlink
+
+    opencv_core 
+    opencv_highgui 
+    opencv_imgproc 
+    opencv_video
+    opencv_videoio
+
+    ${EIGEN3_LIBRARIES}
+)
