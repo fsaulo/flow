@@ -7,9 +7,9 @@
 #include "opencv/CvInterface.h"
 #include "gcs/GCSMavlink.h"
 #include "utils/DCOffsetFilter.h"
+#include "params.h"
 
 #include "Estimator.h"
-
 
 void ClearFile(std::string& filename)
 {
@@ -24,9 +24,9 @@ void MavlinkMessageCallback(void)
 {
     GCSMavlink conn;
 
-    const int  kThreadFrequencyHz = 30;
-    const int  kThreadMillisseconds = static_cast<int>((1.0 / kThreadFrequencyHz) * 1e3);
-    const auto kTimeWindow = std::chrono::milliseconds(kThreadMillisseconds);
+    const int  thread_frequency = flow::kThreadFrequencyHz;
+    const int  thread_milliseconds = static_cast<int>((1.0 / thread_frequency) * 1e3);
+    const auto time_window = std::chrono::milliseconds(thread_milliseconds);
 
     while (true) {
         auto tick_start = std::chrono::steady_clock::now();
@@ -37,7 +37,7 @@ void MavlinkMessageCallback(void)
         result = conn.ReceiveSome();
 
         auto time_elapsed = std::chrono::steady_clock::now() - tick_start;
-        auto time_sleep = kTimeWindow - time_elapsed;
+        auto time_sleep = time_window - time_elapsed;
         if (time_sleep > std::chrono::milliseconds::zero()) {
             std::this_thread::sleep_for(time_sleep);
         }
@@ -46,18 +46,19 @@ void MavlinkMessageCallback(void)
         float freq_thread = (1.0 / time_thread.count()) * 1e9;
         std::cout << "[DEBUG] [MavlinkMessageCallback] running:"        << std::endl
                   << "\tfreq_est     = " << freq_thread                 << " Hz" << std::endl
-                  << "\tthread_freq  = " << kThreadFrequencyHz          << " Hz" << std::endl
+                  << "\tthread_freq  = " << thread_frequency          << " Hz" << std::endl
                   << "\ttime_sleep   = " << time_sleep.count() * 1e-6   << " ms" << std::endl
                   << "\ttime_elapsed = " << time_elapsed.count() * 1e-6 << " ms" << std::endl
-                  << "\ttime_window  = " << kTimeWindow.count()         << " ms" << std::endl;
+                  << "\ttime_window  = " << time_window.count()         << " ms" << std::endl;
     }
 }
 
 void EstimatorCallback(const std::string& pipeline)
 {
+    // TODO: also accept different decoders
+    // Make it optional to use OpenCV
     cv::VideoCapture video(pipeline, cv::CAP_GSTREAMER);
-    if (!video.isOpened())
-    {
+    if (!video.isOpened()) {
         std::cout << "Failed to open the video file!\n";
         return;
     }
@@ -71,8 +72,8 @@ void EstimatorCallback(const std::string& pipeline)
 
     video >> prevFrame;
 
-    int target_width, target_height;
-    target_width = target_height = 640;
+    int target_width  = flow::kTargetWidth, 
+        target_height = flow::kTargetHeight;
 
     float imratio = target_width / prevFrame.size().width;
     cv::Size size = cv::Size(target_width, int(prevFrame.size().height * imratio));
@@ -80,71 +81,71 @@ void EstimatorCallback(const std::string& pipeline)
 
     cv::resize(prevFrame, prevFrame, size, 0, 0, cv::INTER_LINEAR);
     cv::cvtColor(prevFrame, prevFrame, cv::COLOR_BGR2GRAY);
-    cv::goodFeaturesToTrack(prevFrame, prevPoints, 500, 0.01, 10);
+    cv::goodFeaturesToTrack(prevFrame, prevPoints, flow::kMaxCorners, flow::kQualityLevel, flow::kMinDistance);
 
-    std::string flowAngVelFile = "flow_angular_velocity.csv";
-    std::string flowLinVelFile = "flow_linear_velocity.csv";
-    std::string flowQuaPosFile = "flow_quaternion_orientation.csv";
-
+    std::string flowAngVelFile = flow::kFlowAngVelFilename; 
+    std::string flowLinVelFile = flow::kFlowLinVelFilename; 
+    std::string flowQuaPosFile = flow::kFlowQuaVelFilename; 
 
     ClearFile(flowAngVelFile);
     ClearFile(flowLinVelFile);
     ClearFile(flowQuaPosFile);
 
-    double cx = 320.5;
-    double cy = 240.5;
-    double focalLength = 277.191356;
+    double cx = flow::kCx;
+    double cy = flow::kCy;
+    double focalLength = flow::kFocalLength;
+
+    std::vector<double> dist_coeffs = flow::kDistCoeffs;
+    cv::Mat distCoeffs(5, 1, CV_64F, dist_coeffs.data());
+    cv::Mat K = (cv::Mat_<double>(3, 3) <<
+        focalLength, 0, cx,
+        0, focalLength, cy,
+        0, 0, 1);
 
     cv::Mat priorPose = (cv::Mat_<double>(4, 4) <<
         1, 0, 0, 0,
         0, 1, 0, 0,
         0, 0, 1, 0,
         0, 0, 0, 1);
-    cv::Mat distCoeffs = (cv::Mat_<double>(5, 1) << 0, 0, 0, 0, 0);
-    cv::Mat K = (cv::Mat_<double>(3, 3) <<
-        focalLength, 0, cx,
-        0, focalLength, cy,
-        0, 0, 1);
 
-    double maxVelocityThreshold = 10;
     double prevX = target_width / 2.0;
     double prevY = target_height / 2.0;
-    double x, y;
-    double dt = 0.033;
-    double hfov = 1.047;
+    double cumx, cumy = 0;
+    double dt = flow::kInitialDt;
+    double hfov = flow::kHFov;
 
     bool pause = false;
-    bool filterByStatus = true;
-    bool filterByVelocity = false;
+    bool filterByStatus = flow::kFilterByStatus;
+    bool filterByVelocity = flow::kFilterByVelocity;
+    double maxVelocityThreshold = flow::kMaxVelThreshold;
 
-    x = y = 0;
     std::vector<cv::Point2f> filteredPrevPts, filteredCurrPts;
     cv::Mat trajectory = cv::Mat::zeros(target_width, target_height, CV_8UC3);
     cv::Mat accVelocity = cv::Mat::zeros(3, 1, CV_64F);
     cv::Mat priorR = cv::Mat::zeros(3, 3, CV_64F);
     cv::Mat lastVec = cv::Mat::zeros(3, 1, CV_64F);
 
-    int scaleFactor = 1;
-    int scaleHeight = 100;
+    const int scaleFactor = flow::kScaleFactor;
+    const int scaleHeight = flow::kScaleHeight;
     int imx, imy = (int) prevX;
 
-    auto start = std::chrono::high_resolution_clock::now();
+    // TODO: refactor this filters
+    const int filter_size = flow::kFilterSize;
+    DCOffsetFilter xVelFilter(filter_size); 
+    DCOffsetFilter yVelFilter(filter_size); 
+    DCOffsetFilter zVelFilter(filter_size); 
 
-    DCOffsetFilter xVelFilter(5); 
-    DCOffsetFilter yVelFilter(5); 
-    DCOffsetFilter zVelFilter(5); 
+    DCOffsetFilter xxVelFilter(filter_size); 
+    DCOffsetFilter yyVelFilter(filter_size); 
+    DCOffsetFilter zzVelFilter(filter_size); 
 
-    DCOffsetFilter xxVelFilter(20); 
-    DCOffsetFilter yyVelFilter(20); 
-    DCOffsetFilter zzVelFilter(20); 
+    DCOffsetFilter xAngFilter(filter_size); 
+    DCOffsetFilter yAngFilter(filter_size); 
+    DCOffsetFilter zAngFilter(filter_size); 
 
-    DCOffsetFilter xAngFilter(20); 
-    DCOffsetFilter yAngFilter(20); 
-    DCOffsetFilter zAngFilter(20); 
-
-    const int  kThreadFrequencyHz = 30;
-    const int  kThreadMillisseconds = static_cast<int>((1.0 / kThreadFrequencyHz) * 1e3);
-    const auto kTimeWindow = std::chrono::milliseconds(kThreadMillisseconds);
+    const int  thread_frequency = flow::kThreadFrequencyHz;
+    const int  thread_milliseconds = static_cast<int>((1.0 / thread_frequency) * 1e3);
+    const auto time_window = std::chrono::milliseconds(thread_milliseconds);
 
     while (video.read(currFrame))
     {
@@ -250,10 +251,10 @@ void EstimatorCallback(const std::string& pipeline)
             std::cout << "[DEBUG] [lk_pose_estimation] position   : " << xyzVelocity << std::endl;
             std::cout << "[DEBUG] [lk_pose_estimation] angular_vel: " << xyzAngles << std::endl;
 
-            x += xyzVelocity[0];
-            y += xyzVelocity[1];
-            imx = (int) x * scaleFactor + target_width / 2;
-            imy = (int) y * scaleFactor + target_width / 2;
+            cumx += xyzVelocity[0];
+            cumy += xyzVelocity[1];
+            imx = (int) cumx * scaleFactor + target_width / 2;
+            imy = (int) cumy * scaleFactor + target_width / 2;
 
             priorPose = camPose;
             priorR = R;
@@ -294,10 +295,10 @@ void EstimatorCallback(const std::string& pipeline)
         // Update frames and feature points
         std::swap(prevFrame, currFrame);
         std::swap(prevPoints, currPoints);
-        cv::goodFeaturesToTrack(prevFrame, prevPoints, 500, 0.01, 10);
+        cv::goodFeaturesToTrack(prevFrame, prevPoints, flow::kMaxCorners, flow::kQualityLevel, flow::kMinDistance);
 
         auto time_elapsed = std::chrono::steady_clock::now() - tick_start;
-        auto time_sleep = kTimeWindow - time_elapsed;
+        auto time_sleep = time_window - time_elapsed;
         if (time_sleep > std::chrono::milliseconds::zero()) {
             std::this_thread::sleep_for(time_sleep);
         }
@@ -309,10 +310,10 @@ void EstimatorCallback(const std::string& pipeline)
         float freq_thread = (1.0 / time_thread.count()) * 1e9;
         std::cout << "[DEBUG] [EstimatorCallback] running:"        << std::endl
                   << "\tfreq_est     = " << freq_thread                 << " Hz" << std::endl
-                  << "\tthread_freq  = " << kThreadFrequencyHz          << " Hz" << std::endl
+                  << "\tthread_freq  = " << thread_frequency          << " Hz" << std::endl
                   << "\ttime_sleep   = " << time_sleep.count()   * 1e-6 << " ms" << std::endl
                   << "\ttime_elapsed = " << time_elapsed.count() * 1e-6 << " ms" << std::endl
-                  << "\ttime_window  = " << kTimeWindow.count()         << " ms" << std::endl;
+                  << "\ttime_window  = " << time_window.count()         << " ms" << std::endl;
     }
 
     cv::destroyAllWindows();
