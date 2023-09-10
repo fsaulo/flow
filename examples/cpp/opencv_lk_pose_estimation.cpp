@@ -5,10 +5,10 @@
 
 #include <Eigen/Dense>
 
-#include "cpp/include/utils/OpencvInterface.h"
-#include "cpp/include/utils/DCOffsetFilter.h"
+#include "utils/OpencvInterface.h"
+#include "utils/DCOffsetFilter.h"
 #ifdef MAVLINK_UDP_ENABLED
-#include "cpp/include/utils/MavlinkInterface.h"
+#include "utils/include/MavlinkInterface.h"
 #endif
 
 template<typename T, int N>

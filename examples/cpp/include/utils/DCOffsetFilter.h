@@ -1,11 +1,16 @@
-#include <iostream>
+#ifndef DC_OFFSET_FILTER_H
+#define DC_OFFSET_FILTER_H
+
 #include <deque>
 
-class DCOffsetRemover {
+class DCOffsetFilter {
 public:
-  DCOffsetRemover(int windowSize) : windowSize_(windowSize), sum_(0) {}
+  DCOffsetFilter(int windowSize) : windowSize_(windowSize), sum_(0), movingSum_(0) {}
 
-  double RemoveOffset(double sample) {
+  double removeOffset(double sample) {
+    if (windowSize_ == 0) 
+        return sample;
+
     // Add the new sample to the sum
     sum_ += sample;
 
@@ -24,8 +29,17 @@ public:
     return sample - average;
   }
 
+  double update(double sample) {
+      double value = removeOffset(sample);
+      movingSum_ += value;
+      return movingSum_ / windowBuffer_.size();
+  }
+
 private:
   int windowSize_;
   double sum_;
+  double movingSum_;
   std::deque<double> windowBuffer_;
 };  
+
+#endif // DC_OFFSET_FILTER_H
