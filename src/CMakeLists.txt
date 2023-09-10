@@ -21,6 +21,7 @@ add_executable(estimator
     main.cpp
     Estimator.cpp
     Estimator.h
+    params.h
     utils/DCOffsetFilter.cpp
     utils/DCOffsetFilter.h
 )
