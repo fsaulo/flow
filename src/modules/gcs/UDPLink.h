@@ -15,7 +15,7 @@ public:
     ~UDPLink() { Close(); }
 
     ssize_t SendData(const void* data, size_t data_size, const sockaddr_in& dest_addr);
-    ssize_t ReceiveData(void* buffer);
+    ssize_t ReceiveData(char* buffer, size_t size);
 
     bool isSourceAddressSet() const { return m_src_addr_set; }
     bool Initialize(const char* bind_address, int bind_port);
@@ -25,8 +25,7 @@ private:
     int  m_socket_fd;
     bool m_src_addr_set;
 
-    struct sockaddr_in m_addr;
-    struct sockaddr_in m_src_addr;
+    struct sockaddr_in m_src_addr = {};
 
     socklen_t m_src_addr_len;
 };

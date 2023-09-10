@@ -68,9 +68,7 @@ public:
 
     ~GCSMavlink();
 
-    size_t ReceiveSome(char *buffer);
-    GCSResult ParseMessage(const char* buffer, const size_t index) const;
-
+    GCSResult ReceiveSome();
 
 private:
     GCSResult handle_heartbeat(const mavlink_message_t& message) const;

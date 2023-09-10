@@ -7,6 +7,6 @@
 
 void ClearFile(std::string& filename);
 void EstimatorCallback(const std::string& pipeline);
-void MavMessageCallback(void);
+void MavlinkMessageCallback(void);
 
 #endif // LK_ESTIMATOR_H

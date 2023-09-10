@@ -1,20 +1,16 @@
+#include <iostream>
+
 #include "GCSMavlink.h"
 
-size_t GCSMavlink::ReceiveSome(char* buffer) 
-{
-    size_t result_size;
 
-    result_size = m_Socket.ReceiveData(buffer);
-    if (result_size < 0) {
-        perror("GCSMavlink: invalid buffer size");
-    }
-    
-    return result_size;
-}
-
-GCSResult GCSMavlink::ParseMessage(const char* buffer, const size_t index) const
+GCSResult GCSMavlink::ReceiveSome()
 {
-    if (index < 0) {
+    int  nret;
+    char buffer[2048];
+
+    nret = m_Socket.ReceiveData(buffer, sizeof(buffer));
+
+    if (nret < 0) {
         perror("GCSResult: invalid buffer index");
         
         GCSResult result;
@@ -23,38 +19,48 @@ GCSResult GCSMavlink::ParseMessage(const char* buffer, const size_t index) const
         return result;
     }
 
-    mavlink_message_t message;
-    mavlink_status_t  message_status;
+    if (nret == 0) {
+        GCSResult result;
+        result.message_status = GCSMessageStatus::kMessageUndefined;
 
-    bool mavlink_status = mavlink_parse_char(
-            MAVLINK_COMM_0, 
-            buffer[index], 
-            &message, 
-            &message_status
-    );
-
-    GCSResult result;
-
-    if (mavlink_status != MAVLINK_FRAMING_OK) {
-        result.message_status = GCSMessageStatus::kMessageError;
+        printf("failed\n");
         return result;
     }
+    
+    GCSResult result;
 
-    switch (message.msgid) {
-    case MAVLINK_MSG_ID_HEARTBEAT:
-        result = handle_heartbeat(message);
-        break;
-    case MAVLINK_MSG_ID_GLOBAL_POSITION_INT:
-        result = handle_global_position_int(message);
-        break;
-    case MAVLINK_MSG_ID_LOCAL_POSITION_NED:
-        result = handle_local_position_ned(message);
-        break;
-    case MAVLINK_MSG_ID_ATTITUDE:
-        result = handle_attitude(message);
-        break;
-    default:
-        break;
+    mavlink_message_t message;
+    mavlink_status_t  message_status;
+    
+    for (int i = 0; i < nret; ++i) {
+        uint8_t mavlink_status = mavlink_parse_char(
+                MAVLINK_COMM_0, 
+                buffer[i], 
+                &message, 
+                &message_status
+        );
+
+
+        if (mavlink_status != MAVLINK_FRAMING_OK) {
+            continue;
+        }
+
+        switch (message.msgid) {
+        case MAVLINK_MSG_ID_HEARTBEAT:
+            result = handle_heartbeat(message);
+            break;
+        case MAVLINK_MSG_ID_GLOBAL_POSITION_INT:
+            result = handle_global_position_int(message);
+            break;
+        case MAVLINK_MSG_ID_LOCAL_POSITION_NED:
+            result = handle_local_position_ned(message);
+            break;
+        case MAVLINK_MSG_ID_ATTITUDE:
+            result = handle_attitude(message);
+            break;
+        default:
+            break;
+        }
     }
 
     return result;
@@ -62,10 +68,13 @@ GCSResult GCSMavlink::ParseMessage(const char* buffer, const size_t index) const
 
 GCSMavlink::GCSMavlink()
 {
-    const char*   kAddress = "127.0.0.1";
-    const uint16_t kPort    = 14445;
-
-    m_Socket.Initialize(kAddress, kPort);
+    const char*   kAddress = "0.0.0.0";
+    const uint16_t kPort   = 14445;
+    
+    bool success = m_Socket.Initialize(kAddress, kPort);
+    if(!success) {
+        perror("GCSMavlink: couldn't create a connection");
+    }
 }
 
 GCSMavlink::~GCSMavlink() {
@@ -74,7 +83,7 @@ GCSMavlink::~GCSMavlink() {
 
 GCSResult GCSMavlink::handle_heartbeat(const mavlink_message_t& message) const
 {
-    printf("Not implemented\n");
+    std::cout << "[DEBUG] [handle_heartbeat] not implemented" << std::endl;
 
     GCSResult result;
     result.message_status = GCSMessageStatus::kMessageUndefined;

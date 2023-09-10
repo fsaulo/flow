@@ -12,10 +12,10 @@
 
 void ClearFile(std::string& filename)
 {
-    std::ofstream dataFile(filename, std::ios::trunc);
-    while (dataFile.is_open()) {
-        dataFile << "x,y,z,w" << std::endl;
-        dataFile.close();
+    std::ofstream rw_file(filename, std::ios::trunc);
+    while (rw_file.is_open()) {
+        rw_file << "x,y,z,w" << std::endl;
+        rw_file.close();
     }
 }
 
@@ -24,15 +24,12 @@ void MavlinkMessageCallback(void)
     GCSMavlink conn;
 
     while (true) {
-        char   buffer[2048];
-        size_t n_msgs;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
         GCSResult result;
 
         // TODO: process result
-        n_msgs = conn.ReceiveSome(buffer);
-        result = conn.ParseMessage(buffer, n_msgs);
-
+        result = conn.ReceiveSome();
     }
 }
 

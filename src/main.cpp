@@ -16,9 +16,14 @@ int main(int argc, char* argv[])
         return 0;
     }
 
-    std::thread optical_flow_thread;
+    std::thread optical_flow_thread,
+                mavlink_thread;
+
     optical_flow_thread = std::thread(EstimatorCallback, std::cref(pipeline_stream));
+    mavlink_thread = std::thread(MavlinkMessageCallback);
+
     optical_flow_thread.join();
+    mavlink_thread.join();
 
     return 0;
 }
