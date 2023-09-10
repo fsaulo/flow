@@ -1,4 +1,5 @@
 #include <fstream>
+#include <chrono>
 
 #include <opencv2/videoio.hpp>
 #include <opencv2/video.hpp>
@@ -23,13 +24,32 @@ void MavlinkMessageCallback(void)
 {
     GCSMavlink conn;
 
+    const int  kThreadFrequencyHz = 30;
+    const int  kThreadMillisseconds = static_cast<int>((1.0 / kThreadFrequencyHz) * 1e3);
+    const auto kTimeWindow = std::chrono::milliseconds(kThreadMillisseconds);
+
     while (true) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        auto tick_start = std::chrono::steady_clock::now();
 
         GCSResult result;
 
         // TODO: process result
         result = conn.ReceiveSome();
+
+        auto time_elapsed = std::chrono::steady_clock::now() - tick_start;
+        auto time_sleep = kTimeWindow - time_elapsed;
+        if (time_sleep > std::chrono::milliseconds::zero()) {
+            std::this_thread::sleep_for(time_sleep);
+        }
+        
+        auto  time_thread = std::chrono::steady_clock::now() - tick_start;
+        float freq_thread = (1.0 / time_thread.count()) * 1e9;
+        std::cout << "[DEBUG] [MavlinkMessageCallback] running:"        << std::endl
+                  << "\tfreq_est     = " << freq_thread                 << " Hz" << std::endl
+                  << "\tthread_freq  = " << kThreadFrequencyHz          << " Hz" << std::endl
+                  << "\ttime_sleep   = " << time_sleep.count() * 1e-6   << " ms" << std::endl
+                  << "\ttime_elapsed = " << time_elapsed.count() * 1e-6 << " ms" << std::endl
+                  << "\ttime_window  = " << kTimeWindow.count()         << " ms" << std::endl;
     }
 }
 
@@ -104,7 +124,6 @@ void EstimatorCallback(const std::string& pipeline)
     cv::Mat priorR = cv::Mat::zeros(3, 3, CV_64F);
     cv::Mat lastVec = cv::Mat::zeros(3, 1, CV_64F);
 
-    int loop_counter = 0;
     int scaleFactor = 1;
     int scaleHeight = 100;
     int imx, imy = (int) prevX;
@@ -123,9 +142,13 @@ void EstimatorCallback(const std::string& pipeline)
     DCOffsetFilter yAngFilter(20); 
     DCOffsetFilter zAngFilter(20); 
 
+    const int  kThreadFrequencyHz = 30;
+    const int  kThreadMillisseconds = static_cast<int>((1.0 / kThreadFrequencyHz) * 1e3);
+    const auto kTimeWindow = std::chrono::milliseconds(kThreadMillisseconds);
+
     while (video.read(currFrame))
     {
-        auto runtime = std::chrono::high_resolution_clock::now();
+        auto tick_start = std::chrono::steady_clock::now();
 
         try {
             cv::resize(currFrame, currFrame, size, 0, 0, cv::INTER_LINEAR);
@@ -273,17 +296,23 @@ void EstimatorCallback(const std::string& pipeline)
         std::swap(prevPoints, currPoints);
         cv::goodFeaturesToTrack(prevFrame, prevPoints, 500, 0.01, 10);
 
-        loop_counter++;
-        auto end = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> duration = end - start;
-        std::chrono::duration<double> step = end - runtime;
-
-        dt = step.count();
-        
-        if (duration.count() >= 1.0) {
-            loop_counter = 0;
-            start = std::chrono::high_resolution_clock::now();
+        auto time_elapsed = std::chrono::steady_clock::now() - tick_start;
+        auto time_sleep = kTimeWindow - time_elapsed;
+        if (time_sleep > std::chrono::milliseconds::zero()) {
+            std::this_thread::sleep_for(time_sleep);
         }
+
+        std::chrono::duration<float> step = std::chrono::steady_clock::now() - tick_start;
+        dt = step.count();
+
+        auto  time_thread = std::chrono::steady_clock::now() - tick_start;
+        float freq_thread = (1.0 / time_thread.count()) * 1e9;
+        std::cout << "[DEBUG] [EstimatorCallback] running:"        << std::endl
+                  << "\tfreq_est     = " << freq_thread                 << " Hz" << std::endl
+                  << "\tthread_freq  = " << kThreadFrequencyHz          << " Hz" << std::endl
+                  << "\ttime_sleep   = " << time_sleep.count()   * 1e-6 << " ms" << std::endl
+                  << "\ttime_elapsed = " << time_elapsed.count() * 1e-6 << " ms" << std::endl
+                  << "\ttime_window  = " << kTimeWindow.count()         << " ms" << std::endl;
     }
 
     cv::destroyAllWindows();

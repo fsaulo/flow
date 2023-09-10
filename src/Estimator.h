@@ -1,7 +1,7 @@
 #ifndef LK_ESTIMATOR_H
 #define LK_ESTIMATOR_H
 
-#include <iostream>
+#include <string>
 
 #include "params.h"
 
