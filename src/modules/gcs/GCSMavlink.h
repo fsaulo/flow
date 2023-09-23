@@ -11,7 +11,8 @@ enum class GCSMessageType {
     kGlobalPositionInt,
     kAttitude,
     kLocalPositionNed,
-    kHihghresImu
+    kHihghresImu,
+    kOpticalFlow
 };
 
 enum class GCSMessageStatus {
@@ -20,6 +21,16 @@ enum class GCSMessageStatus {
     kMessageError,
     kMessageIncomplete
 };
+
+typedef struct GCSOpticalFlow {
+    uint64_t time_ms;
+    double flow_x;
+    double flow_y;
+    double flow_xgyro;
+    double flow_ygyro;
+    double flow_zgyro;
+    uint8_t quality;
+} gcs_optical_flow_t;
 
 typedef struct GCSLocalPositionNed {
     uint64_t time_ms;

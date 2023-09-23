@@ -7,9 +7,11 @@ namespace flow {
 
 const int kFileManagerSleepTimeSeconds = 1;
 const int kThreadFrequencyHz = 30;
-const int kMavlinkFrequencyHz = 400;
-const int kTargetWidth  = 640;
-const int kTargetHeight = 640;
+const int kMavlinkFrequencyHz = 500;
+const int kTargetWidth  = 240;
+const int kTargetHeight = 240;
+const int kOutputWidth = 640;
+const int kOutputHeight = 640;
 
 const int kMaxCorners = 500;
 const double kQualityLevel = 0.01;
@@ -30,10 +32,11 @@ const int kScaleFactor = 1;
 const int kScaleHeight = 100;
 const int kFilterSize = 10;
 
-const std::string kFlowAngVelFilename = "flow_angular_velocity.csv";
-const std::string kFlowLinVelFilename = "flow_linear_velocity.csv";
-const std::string kFlowQuaVelFilename = "flow_quaternion_orientation.csv";
+const double kFlowXScaler = 1;
+const double kFlowYScaler = 1;
+const int kFlowIntertialCountMax = 10;
 
+const std::string kGCSFlowFilename = "gcs_optical_flow.csv";
 const std::string kGCSAttitudeFilename = "gcs_attitude.csv";
 const std::string kGCSGlobalPositionFilename = "gcs_global_position_int.csv";
 const std::string kGCSLocalPositionFilename = "gcs_local_position.csv";

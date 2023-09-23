@@ -15,11 +15,15 @@ std::deque<gcs_local_position_t> g_local_position_queue;
 std::deque<gcs_global_position_t> g_global_position_queue;
 std::deque<gcs_attitude_t> g_attitude_queue;
 std::deque<gcs_highres_imu_t> g_highres_imu_queue;
+std::deque<gcs_optical_flow_t> g_optical_flow_queue;
 
 std::mutex g_global_position_mutex;
 std::mutex g_local_position_mutex;
 std::mutex g_attitude_mutex;
 std::mutex g_highres_imu_mutex;
+std::mutex g_optical_flow_mutex;
+
+uint64_t last_local_position_stamp;
 
 template <typename T>
 void AppendVecToFile(const std::vector<T>& data, const std::string& filename, const uint64_t ts) {
@@ -51,6 +55,9 @@ void ClearFile(std::string& filename, const GCSMessageType& type = GCSMessageTyp
     case GCSMessageType::kHihghresImu:
         header = "ts,xacc,yacc,zacc,xgyro,ygyro,zgyro,xmag,ymag,zmag,temperature";
         break;
+    case GCSMessageType::kOpticalFlow:
+        header = "ts,vx,vy,xgyro,ygyro,zgyro";
+        break;
     default:
         header = "ts,x,y,z,w";
         break;
@@ -69,12 +76,14 @@ void FileManagerCallback(void)
     std::string global_position_filename = flow::kGCSGlobalPositionFilename;
     std::string attitude_filename = flow::kGCSAttitudeFilename;
     std::string scaled_imu_filename = flow::kGCSHighresImuFilename;
+    std::string optical_flow_filename = flow::kGCSFlowFilename;
 
     std::vector<std::pair<std::string, GCSMessageType>> files_with_type = {
-        {local_position_filename, GCSMessageType::kLocalPositionNed},
-        {global_position_filename, GCSMessageType::kGlobalPositionInt},
-        {attitude_filename, GCSMessageType::kAttitude},
-        {scaled_imu_filename, GCSMessageType::kHihghresImu}
+        { local_position_filename, GCSMessageType::kLocalPositionNed   },
+        { global_position_filename, GCSMessageType::kGlobalPositionInt },
+        { attitude_filename, GCSMessageType::kAttitude                 },
+        { scaled_imu_filename, GCSMessageType::kHihghresImu            },
+        { optical_flow_filename, GCSMessageType::kOpticalFlow          }
     };
 
     for (auto data : files_with_type) {
@@ -87,13 +96,15 @@ void FileManagerCallback(void)
         GlobalPositionFileUpdate(global_position_filename);
         AttitudeFileUpdate(attitude_filename);
         HighresImuFileUpdate(scaled_imu_filename);
-        std::this_thread::sleep_for(std::chrono::seconds(time_sleep_seconds));
+        OpticalFlowFileUpdate(optical_flow_filename);
 
+        std::this_thread::sleep_for(std::chrono::seconds(time_sleep_seconds));
         std::cout << "[DEBUG] [FileManagerCallback] Stream frequency: " << std::endl
                   << "\tlocal_position_ned: " << g_local_position_queue.size()  << " Hz" << std::endl
                   << "\tglobal_position:    " << g_global_position_queue.size() << " Hz" << std::endl
                   << "\tattitude:           " << g_attitude_queue.size()        << " Hz" << std::endl
-                  << "\thighres_imu:        " << g_highres_imu_queue.size()     << " Hz" << std::endl;
+                  << "\thighres_imu:        " << g_highres_imu_queue.size()     << " Hz" << std::endl
+                  << "\toptical_flow:       " << g_optical_flow_queue.size()    << " Hz" << std::endl;
     }
 }
 
@@ -114,7 +125,20 @@ void InsertGlobalPosition(const GCSGlobalPosition& global_position) {
 
 void InsertLocalPosition(const GCSLocalPositionNed& local_position) {
     std::lock_guard<std::mutex> guard(g_local_position_mutex);
-    g_local_position_queue.push_back(local_position);
+
+    // TODO: Fix this little hack to sync up poses from optical_flow sensor.
+    const int optical_flow_milliseconds_sync = 20;
+    const int optical_flow_time_diff = local_position.time_ms - last_local_position_stamp;
+    if (optical_flow_time_diff >= optical_flow_milliseconds_sync) {
+        g_local_position_queue.push_back(local_position);
+    }
+
+    last_local_position_stamp = local_position.time_ms;
+}
+
+void InsertOpticalFlow(const GCSOpticalFlow& optical_flow) {
+    std::lock_guard<std::mutex> guard(g_optical_flow_mutex);
+    g_optical_flow_queue.push_back(optical_flow);
 }
 
 void HighresImuFileUpdate(const std::string& filename)
@@ -197,6 +221,24 @@ void LocalPositionFileUpdate(const std::string& filename)
     }
 }
 
+void OpticalFlowFileUpdate(const std::string& filename)
+{
+    std::lock_guard<std::mutex> guard(g_optical_flow_mutex);
+    for ( auto optical_flow : g_optical_flow_queue ) {
+        auto timestamp = optical_flow.time_ms;
+        std::vector<double> optical_flow_vect = {
+            optical_flow.flow_x,
+            optical_flow.flow_y,
+            optical_flow.flow_xgyro,
+            optical_flow.flow_ygyro,
+            optical_flow.flow_zgyro
+        };
+
+        AppendVecToFile(optical_flow_vect, filename, timestamp);
+        g_optical_flow_queue.pop_front();
+    }
+}
+
 void MavlinkMessageCallback(void)
 {
     GCSMavlink conn;
@@ -228,6 +270,7 @@ void MavlinkMessageCallback(void)
         case GCSMessageType::kHihghresImu:
             InsertHighresImu(result.highres_imu);
             break;
+        case GCSMessageType::kOpticalFlow:
         case GCSMessageType::kHeartbeat:
         case GCSMessageType::kUnknown:
         default:
@@ -239,15 +282,6 @@ void MavlinkMessageCallback(void)
         if (time_sleep > std::chrono::milliseconds::zero()) {
             std::this_thread::sleep_for(time_sleep);
         }
-
-        // auto  time_thread = std::chrono::steady_clock::now() - tick_start;
-        // float freq_thread = (1.0 / time_thread.count()) * 1e9;
-        // std::cout << "[DEBUG] [EstimatorCallback] running:"             << std::endl
-        //           << "\tfreq_est     = " << freq_thread                 << " Hz" << std::endl
-        //           << "\tthread_freq  = " << thread_frequency            << " Hz" << std::endl
-        //           << "\ttime_sleep   = " << time_sleep.count()   * 1e-6 << " ms" << std::endl
-        //           << "\ttime_elapsed = " << time_elapsed.count() * 1e-6 << " ms" << std::endl
-        //           << "\ttime_window  = " << time_window.count()         << " ms" << std::endl;
     }
 }
 
@@ -270,24 +304,33 @@ void EstimatorCallback(const std::string& pipeline)
 
     video >> prevFrame;
 
-    int target_width  = flow::kTargetWidth, 
-        target_height = flow::kTargetHeight;
+    int image_width = prevFrame.cols;
+    int image_height = prevFrame.rows;
+    int target_width = flow::kTargetWidth;
+    int target_height = flow::kTargetHeight;
+    int output_width = flow::kOutputWidth;
+    int output_height = flow::kOutputHeight;
 
-    float imratio = target_width / prevFrame.size().width;
-    cv::Size size = cv::Size(target_width, int(prevFrame.size().height * imratio));
-    cv::Mat distorted;
+    int coord_map_rect_x = static_cast<int>((image_width - target_width) / 2);
+    int coord_map_rect_y = static_cast<int>((image_height - target_height) / 2);
 
-    cv::resize(prevFrame, prevFrame, size, 0, 0, cv::INTER_LINEAR);
-    cv::cvtColor(prevFrame, prevFrame, cv::COLOR_BGR2GRAY);
-    cv::goodFeaturesToTrack(prevFrame, prevPoints, flow::kMaxCorners, flow::kQualityLevel, flow::kMinDistance);
+    cv::Rect roi(
+        coord_map_rect_x,
+        coord_map_rect_y,
+        target_width,
+        target_height
+    );
 
-    std::string flowAngVelFile = flow::kFlowAngVelFilename; 
-    std::string flowLinVelFile = flow::kFlowLinVelFilename; 
-    std::string flowQuaPosFile = flow::kFlowQuaVelFilename; 
+    std::cout << roi << std::endl;
 
-    ClearFile(flowAngVelFile);
-    ClearFile(flowLinVelFile);
-    ClearFile(flowQuaPosFile);
+    // float imratio = target_width / prevFrame.size().width;
+    // cv::Size size = cv::Size(target_width, int(prevFrame.size().height * imratio));
+    // cv::Mat distorted;
+    // cv::resize(prevFrame, prevFrame, size, 0, 0, cv::INTER_LINEAR);
+
+    cv::Mat prev_roi_frame = prevFrame(roi);
+    cv::cvtColor(prev_roi_frame, prev_roi_frame, cv::COLOR_BGR2GRAY);
+    cv::goodFeaturesToTrack(prev_roi_frame, prevPoints, flow::kMaxCorners, flow::kQualityLevel, flow::kMinDistance);
 
     double cx = flow::kCx;
     double cy = flow::kCy;
@@ -306,8 +349,8 @@ void EstimatorCallback(const std::string& pipeline)
         0, 0, 1, 0,
         0, 0, 0, 1);
 
-    double prevX = target_width / 2.0;
-    double prevY = target_height / 2.0;
+    double prevX = output_width / 2.0;
+    double prevY = output_height / 2.0;
     double cumx = 0.0, cumy = 0.0;
     double dt = flow::kInitialDt;
     double hfov = flow::kHFov;
@@ -320,27 +363,28 @@ void EstimatorCallback(const std::string& pipeline)
     double maxVelocityThreshold = flow::kMaxVelThreshold;
 
     std::vector<cv::Point2f> filteredPrevPts, filteredCurrPts;
-    cv::Mat trajectory = cv::Mat::zeros(target_width, target_height, CV_8UC3);
+    cv::Mat trajectory = cv::Mat::zeros(output_width, output_height, CV_8UC3);
     cv::Mat accVelocity = cv::Mat::zeros(3, 1, CV_64F);
     cv::Mat priorR = cv::Mat::zeros(3, 3, CV_64F);
     cv::Mat lastVec = cv::Mat::zeros(3, 1, CV_64F);
 
     const int scaleFactor = flow::kScaleFactor;
     int imx, imy = (int) prevX;
+    int inertial_count = 0;
 
     // TODO: refactor this filters
     const int filter_size = flow::kFilterSize;
-    DCOffsetFilter xVelFilter(filter_size); 
-    DCOffsetFilter yVelFilter(filter_size); 
-    DCOffsetFilter zVelFilter(filter_size); 
+    DCOffsetFilter xVelFilter(filter_size);
+    DCOffsetFilter yVelFilter(filter_size);
+    DCOffsetFilter zVelFilter(filter_size);
 
-    DCOffsetFilter xxVelFilter(filter_size); 
-    DCOffsetFilter yyVelFilter(filter_size); 
-    DCOffsetFilter zzVelFilter(filter_size); 
+    DCOffsetFilter xxVelFilter(filter_size);
+    DCOffsetFilter yyVelFilter(filter_size);
+    DCOffsetFilter zzVelFilter(filter_size);
 
-    DCOffsetFilter xAngFilter(filter_size); 
-    DCOffsetFilter yAngFilter(filter_size); 
-    DCOffsetFilter zAngFilter(filter_size); 
+    DCOffsetFilter xAngFilter(filter_size);
+    DCOffsetFilter yAngFilter(filter_size);
+    DCOffsetFilter zAngFilter(filter_size);
 
     const int  thread_frequency = flow::kThreadFrequencyHz;
     const int  thread_milliseconds = static_cast<int>((1.0 / thread_frequency) * 1e3);
@@ -349,11 +393,12 @@ void EstimatorCallback(const std::string& pipeline)
     while (video.read(currFrame))
     {
         auto tick_start = std::chrono::steady_clock::now();
+        cv::Mat curr_roi_frame;
 
         try {
-            cv::resize(currFrame, currFrame, size, 0, 0, cv::INTER_LINEAR);
-            cv::cvtColor(currFrame, currFrame, cv::COLOR_BGR2GRAY);
-            cv::calcOpticalFlowPyrLK(prevFrame, currFrame, prevPoints, currPoints, status, error);
+            curr_roi_frame = currFrame(roi);
+            cv::cvtColor(curr_roi_frame, curr_roi_frame, cv::COLOR_BGR2GRAY);
+            cv::calcOpticalFlowPyrLK(prev_roi_frame, curr_roi_frame, prevPoints, currPoints, status, error);
 
             double sumMagnitude = 0.0;
             int count = 0;
@@ -431,29 +476,42 @@ void EstimatorCallback(const std::string& pipeline)
 
             accVelocity = camPose.rowRange(0, 3).col(3);
 
-            cv::Vec4f quatPose = flow::opencv::rotationMatrixToQuaternion(camRot);
             cv::Vec3f xyzAngles = flow::opencv::rotationMatrixToEulerAngles(cam_R_img);
             cv::Vec3f xyzVelocity = accVelocity;
 
-            xyzAngles[0] = xAngFilter.update(xyzAngles[0]);
-            xyzAngles[1] = yAngFilter.update(xyzAngles[1]);
-            xyzAngles[2] = zAngFilter.update(xyzAngles[2]) * -1;
+            // xyzAngles[0] = xAngFilter.update(xyzAngles[0]);
+            // xyzAngles[1] = yAngFilter.update(xyzAngles[1]);
+            // xyzAngles[2] = zAngFilter.update(xyzAngles[2]) * -1;
 
-            xyzVelocity[0] = xxVelFilter.update(xyzVelocity[0]);
-            xyzVelocity[1] = yyVelFilter.update(xyzVelocity[1]);
-            xyzVelocity[2] = zzVelFilter.update(xyzVelocity[2]);
+            // xyzVelocity[0] = xxVelFilter.update(xyzVelocity[0]);
+            // xyzVelocity[1] = yyVelFilter.update(xyzVelocity[1]);
+            // xyzVelocity[2] = zzVelFilter.update(xyzVelocity[2]);
 
-            flow::opencv::saveCvVecToFile<float, 4>(flowQuaPosFile, quatPose);
-            flow::opencv::saveCvVecToFile<float, 3>(flowAngVelFile, xyzAngles);
-            flow::opencv::saveCvVecToFile<float, 3>(flowLinVelFile, xyzVelocity);
+            auto sys_tick = std::chrono::system_clock::now().time_since_epoch();
+            auto unix_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(sys_tick).count();
 
+            gcs_optical_flow_t optical_flow;
+            optical_flow.time_ms = unix_epoch;
+            optical_flow.flow_x = xyzVelocity[0];
+            optical_flow.flow_y = xyzVelocity[1];
+            optical_flow.flow_xgyro = xyzAngles[0];
+            optical_flow.flow_ygyro = xyzAngles[1];
+            optical_flow.flow_zgyro = xyzAngles[2];
+
+            // Wait a little bit before start integrating sensor
+            if (inertial_count < flow::kFlowIntertialCountMax) {
+                inertial_count++;
+                continue;
+            }
+
+            InsertOpticalFlow(optical_flow);
             std::cout << "[DEBUG] [lk_pose_estimation] position   : " << xyzVelocity << std::endl;
             std::cout << "[DEBUG] [lk_pose_estimation] angular_vel: " << xyzAngles << std::endl;
 
             cumx += xyzVelocity[0];
             cumy += xyzVelocity[1];
-            imx = (int) cumx * scaleFactor + target_width / 2;
-            imy = (int) cumy * scaleFactor + target_width / 2;
+            imx = (int) (cumx * scaleFactor) + output_width / 2;
+            imy = (int) (cumy * scaleFactor) + output_height / 2;
 
             priorPose = camPose;
             priorR = R;
@@ -462,7 +520,7 @@ void EstimatorCallback(const std::string& pipeline)
             std::cout << e.what()<< std::endl;
         }
 
-        cv::Mat flowDisplay = currFrame.clone();
+        cv::Mat flowDisplay = curr_roi_frame.clone();
         cv::Mat coloredFlowDisplay;
 
         cv::cvtColor(flowDisplay, coloredFlowDisplay, cv::COLOR_GRAY2BGR);
@@ -476,13 +534,14 @@ void EstimatorCallback(const std::string& pipeline)
         filteredPrevPts.clear();
         filteredCurrPts.clear();
 
+        cv::resize(coloredFlowDisplay, coloredFlowDisplay, cv::Size(image_width, image_height), 0, 0, cv::INTER_LINEAR);
         cv::line(trajectory, cv::Point(prevX, prevY), cv::Point(imx, imy), cv::Scalar(0, 0, 255), 2);
         prevX = imx;
         prevY = imy;
 
         if (!pause) {
-            cv::imshow("Optical Flow", coloredFlowDisplay);
-            cv::imshow("Trajectory", trajectory);
+            // cv::imshow("Optical Flow", coloredFlowDisplay);
+            // cv::imshow("Trajectory", trajectory);
         }
 
         int keyboard = cv::waitKey(1);
@@ -492,9 +551,9 @@ void EstimatorCallback(const std::string& pipeline)
             pause = !pause;
 
         // Update frames and feature points
-        std::swap(prevFrame, currFrame);
+        std::swap(prev_roi_frame, curr_roi_frame);
         std::swap(prevPoints, currPoints);
-        cv::goodFeaturesToTrack(prevFrame, prevPoints, flow::kMaxCorners, flow::kQualityLevel, flow::kMinDistance);
+        cv::goodFeaturesToTrack(prev_roi_frame, prevPoints, flow::kMaxCorners, flow::kQualityLevel, flow::kMinDistance);
 
         auto time_elapsed = std::chrono::steady_clock::now() - tick_start;
         auto time_sleep = time_window - time_elapsed;
@@ -504,20 +563,10 @@ void EstimatorCallback(const std::string& pipeline)
 
         std::chrono::duration<float> step = std::chrono::steady_clock::now() - tick_start;
         dt = step.count();
-
-        auto current_system_clock = std::chrono::system_clock::now().time_since_epoch();
-        auto unix_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(current_system_clock).count();
-        auto  time_thread = std::chrono::steady_clock::now() - tick_start;
-        float freq_thread = (1.0 / time_thread.count()) * 1e9;
-        // std::cout << "[DEBUG] [EstimatorCallback] running:"             << std::endl
-        //           << "\ttime         = " << unix_epoch                  << " ms" << std::endl
-        //           << "\tfreq_est     = " << freq_thread                 << " Hz" << std::endl
-        //           << "\tthread_freq  = " << thread_frequency            << " Hz" << std::endl
-        //           << "\ttime_sleep   = " << time_sleep.count()   * 1e-6 << " ms" << std::endl
-        //           << "\ttime_elapsed = " << time_elapsed.count() * 1e-6 << " ms" << std::endl
-        //           << "\ttime_window  = " << time_window.count()         << " ms" << std::endl;
     }
 
     cv::destroyAllWindows();
     video.release();
 }
+
+

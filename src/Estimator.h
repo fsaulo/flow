@@ -17,11 +17,13 @@ void InsertLocalPosition(const GCSLocalPositionNed& local_position);
 void InsertGlobalPosition(const GCSGlobalPosition& global_position);
 void InsertAttitude(const GCSAttitude& attitude);
 void InsertHighresImu(const GCSHighresImu& scaled_imu);
+void InsertOpticalFlow(const GCSOpticalFlow& optical_flow);
 
 void LocalPositionFileUpdate(const std::string& filename);
 void GlobalPositionFileUpdate(const std::string& filename);
 void AttitudeFileUpdate(const std::string& filename);
 void HighresImuFileUpdate(const std::string& filename);
+void OpticalFlowFileUpdate(const std::string& filename);
 
 void ClearFile(const std::string& filename, const GCSMessageType& type = GCSMessageType::kUnknown);
 void EstimatorCallback(const std::string& pipeline);
