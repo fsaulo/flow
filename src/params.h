@@ -5,8 +5,9 @@
 
 namespace flow {
 
-const int kFileManagerSleepTimeSeconds = 10;
+const int kFileManagerSleepTimeSeconds = 1;
 const int kThreadFrequencyHz = 30;
+const int kMavlinkFrequencyHz = 400;
 const int kTargetWidth  = 640;
 const int kTargetHeight = 640;
 

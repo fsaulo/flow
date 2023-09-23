@@ -15,7 +15,11 @@ std::deque<gcs_local_position_t> g_local_position_queue;
 std::deque<gcs_global_position_t> g_global_position_queue;
 std::deque<gcs_attitude_t> g_attitude_queue;
 std::deque<gcs_highres_imu_t> g_highres_imu_queue;
-std::mutex g_queue_mutex;
+
+std::mutex g_global_position_mutex;
+std::mutex g_local_position_mutex;
+std::mutex g_attitude_mutex;
+std::mutex g_highres_imu_mutex;
 
 template <typename T>
 void AppendVecToFile(const std::vector<T>& data, const std::string& filename, const uint64_t ts) {
@@ -79,38 +83,43 @@ void FileManagerCallback(void)
 
     auto time_sleep_seconds = flow::kFileManagerSleepTimeSeconds;
     while (true) {
-        std::this_thread::sleep_for(std::chrono::seconds(time_sleep_seconds));
-
         LocalPositionFileUpdate(local_position_filename);
         GlobalPositionFileUpdate(global_position_filename);
         AttitudeFileUpdate(attitude_filename);
-        ScaledImuFileUpdate(scaled_imu_filename);
+        HighresImuFileUpdate(scaled_imu_filename);
+        std::this_thread::sleep_for(std::chrono::seconds(time_sleep_seconds));
+
+        std::cout << "[DEBUG] [FileManagerCallback] Stream frequency: " << std::endl
+                  << "\tlocal_position_ned: " << g_local_position_queue.size()  << " Hz" << std::endl
+                  << "\tglobal_position:    " << g_global_position_queue.size() << " Hz" << std::endl
+                  << "\tattitude:           " << g_attitude_queue.size()        << " Hz" << std::endl
+                  << "\thighres_imu:        " << g_highres_imu_queue.size()     << " Hz" << std::endl;
     }
 }
 
 void InsertHighresImu(const GCSHighresImu& highres_imu) {
-    std::lock_guard<std::mutex> guard(g_queue_mutex);
+    std::lock_guard<std::mutex> guard(g_highres_imu_mutex);
     g_highres_imu_queue.push_back(highres_imu);
 }
 
 void InsertAttitude(const GCSAttitude& attitude) {
-    std::lock_guard<std::mutex> guard(g_queue_mutex);
+    std::lock_guard<std::mutex> guard(g_attitude_mutex);
     g_attitude_queue.push_back(attitude);
 }
 
 void InsertGlobalPosition(const GCSGlobalPosition& global_position) {
-    std::lock_guard<std::mutex> guard(g_queue_mutex);
+    std::lock_guard<std::mutex> guard(g_global_position_mutex);
     g_global_position_queue.push_back(global_position);
 }
 
 void InsertLocalPosition(const GCSLocalPositionNed& local_position) {
-    std::lock_guard<std::mutex> guard(g_queue_mutex);
+    std::lock_guard<std::mutex> guard(g_local_position_mutex);
     g_local_position_queue.push_back(local_position);
 }
 
-void ScaledImuFileUpdate(const std::string& filename)
+void HighresImuFileUpdate(const std::string& filename)
 {
-    std::lock_guard<std::mutex> guard(g_queue_mutex);
+    std::lock_guard<std::mutex> guard(g_highres_imu_mutex);
     for ( auto scaled_imu : g_highres_imu_queue ) {
         auto timestamp = scaled_imu.time_ms;
         std::vector<double> scaled_imu_vect = {
@@ -133,7 +142,7 @@ void ScaledImuFileUpdate(const std::string& filename)
 
 void AttitudeFileUpdate(const std::string& filename)
 {
-    std::lock_guard<std::mutex> guard(g_queue_mutex);
+    std::lock_guard<std::mutex> guard(g_attitude_mutex);
     for ( auto attitude : g_attitude_queue ) {
         auto timestamp = attitude.time_ms;
         std::vector<double> attitude_vect = {
@@ -152,7 +161,7 @@ void AttitudeFileUpdate(const std::string& filename)
 
 void GlobalPositionFileUpdate(const std::string& filename)
 {
-    std::lock_guard<std::mutex> guard(g_queue_mutex);
+    std::lock_guard<std::mutex> guard(g_global_position_mutex);
     for ( auto global_position : g_global_position_queue ) {
         auto timestamp = global_position.time_ms;
         std::vector<int32_t> global_position_vect = {
@@ -171,7 +180,7 @@ void GlobalPositionFileUpdate(const std::string& filename)
 
 void LocalPositionFileUpdate(const std::string& filename)
 {
-    std::lock_guard<std::mutex> guard(g_queue_mutex);
+    std::lock_guard<std::mutex> guard(g_local_position_mutex);
     for ( auto local_position : g_local_position_queue ) {
         auto timestamp = local_position.time_ms;
         std::vector<double> local_position_vect = {
@@ -192,7 +201,7 @@ void MavlinkMessageCallback(void)
 {
     GCSMavlink conn;
 
-    const int  thread_frequency = flow::kThreadFrequencyHz;
+    const int  thread_frequency = flow::kMavlinkFrequencyHz;
     const int  thread_milliseconds = static_cast<int>((1.0 / thread_frequency) * 1e3);
     const auto time_window = std::chrono::milliseconds(thread_milliseconds);
 
@@ -230,6 +239,15 @@ void MavlinkMessageCallback(void)
         if (time_sleep > std::chrono::milliseconds::zero()) {
             std::this_thread::sleep_for(time_sleep);
         }
+
+        // auto  time_thread = std::chrono::steady_clock::now() - tick_start;
+        // float freq_thread = (1.0 / time_thread.count()) * 1e9;
+        // std::cout << "[DEBUG] [EstimatorCallback] running:"             << std::endl
+        //           << "\tfreq_est     = " << freq_thread                 << " Hz" << std::endl
+        //           << "\tthread_freq  = " << thread_frequency            << " Hz" << std::endl
+        //           << "\ttime_sleep   = " << time_sleep.count()   * 1e-6 << " ms" << std::endl
+        //           << "\ttime_elapsed = " << time_elapsed.count() * 1e-6 << " ms" << std::endl
+        //           << "\ttime_window  = " << time_window.count()         << " ms" << std::endl;
     }
 }
 

@@ -21,7 +21,7 @@ void InsertHighresImu(const GCSHighresImu& scaled_imu);
 void LocalPositionFileUpdate(const std::string& filename);
 void GlobalPositionFileUpdate(const std::string& filename);
 void AttitudeFileUpdate(const std::string& filename);
-void ScaledImuFileUpdate(const std::string& filename);
+void HighresImuFileUpdate(const std::string& filename);
 
 void ClearFile(const std::string& filename, const GCSMessageType& type = GCSMessageType::kUnknown);
 void EstimatorCallback(const std::string& pipeline);
