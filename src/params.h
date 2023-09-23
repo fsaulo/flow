@@ -5,6 +5,7 @@
 
 namespace flow {
 
+const int kFileManagerSleepTimeSeconds = 10;
 const int kThreadFrequencyHz = 30;
 const int kTargetWidth  = 640;
 const int kTargetHeight = 640;
@@ -31,6 +32,11 @@ const int kFilterSize = 10;
 const std::string kFlowAngVelFilename = "flow_angular_velocity.csv";
 const std::string kFlowLinVelFilename = "flow_linear_velocity.csv";
 const std::string kFlowQuaVelFilename = "flow_quaternion_orientation.csv";
+
+const std::string kGCSAttitudeFilename = "gcs_attitude.csv";
+const std::string kGCSGlobalPositionFilename = "gcs_global_position_int.csv";
+const std::string kGCSLocalPositionFilename = "gcs_local_position.csv";
+const std::string kGCSHighresImuFilename = "gcs_highres_imu.csv";
 
 }
 
