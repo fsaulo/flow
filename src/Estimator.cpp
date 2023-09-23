@@ -1,22 +1,190 @@
 #include <fstream>
 #include <chrono>
+#include <iterator>
 
 #include <opencv2/videoio.hpp>
 #include <opencv2/video.hpp>
 
 #include "opencv/CvInterface.h"
-#include "gcs/GCSMavlink.h"
 #include "utils/DCOffsetFilter.h"
 #include "params.h"
 
 #include "Estimator.h"
 
-void ClearFile(std::string& filename)
+std::deque<gcs_local_position_t> g_local_position_queue;
+std::deque<gcs_global_position_t> g_global_position_queue;
+std::deque<gcs_attitude_t> g_attitude_queue;
+std::deque<gcs_highres_imu_t> g_highres_imu_queue;
+std::mutex g_queue_mutex;
+
+template <typename T>
+void AppendVecToFile(const std::vector<T>& data, const std::string& filename, const uint64_t ts) {
+    std::ofstream data_file(filename, std::ios::app);
+    if (!data_file.is_open()) {
+        std::cerr << "Failed to open file: " << filename << std::endl;
+        return;
+    }
+
+    data_file << ts << ",";
+    std::copy(data.begin(), data.end() - 1, std::ostream_iterator<T>(data_file, ","));
+    data_file << data.back() << std::endl;
+    data_file.close();
+}
+
+void ClearFile(std::string& filename, const GCSMessageType& type = GCSMessageType::kUnknown)
 {
+    std::string header = "ts";
+    switch(type) {
+    case GCSMessageType::kGlobalPositionInt:
+        header = "ts,lat,lon,alt,vx,vy,vz";
+        break;
+    case GCSMessageType::kAttitude:
+        header = "ts,roll,pitch,yaw,rollspeed,pitchspeed,yawspeed";
+        break;
+    case GCSMessageType::kLocalPositionNed:
+        header = "ts,x,y,z,vx,vy,vz";
+        break;
+    case GCSMessageType::kHihghresImu:
+        header = "ts,xacc,yacc,zacc,xgyro,ygyro,zgyro,xmag,ymag,zmag,temperature";
+        break;
+    default:
+        header = "ts,x,y,z,w";
+        break;
+    }
+
     std::ofstream rw_file(filename, std::ios::trunc);
     while (rw_file.is_open()) {
-        rw_file << "x,y,z,w" << std::endl;
+        rw_file << header << std::endl;
         rw_file.close();
+    }
+}
+
+void FileManagerCallback(void)
+{
+    std::string local_position_filename = flow::kGCSLocalPositionFilename;
+    std::string global_position_filename = flow::kGCSGlobalPositionFilename;
+    std::string attitude_filename = flow::kGCSAttitudeFilename;
+    std::string scaled_imu_filename = flow::kGCSHighresImuFilename;
+
+    std::vector<std::pair<std::string, GCSMessageType>> files_with_type = {
+        {local_position_filename, GCSMessageType::kLocalPositionNed},
+        {global_position_filename, GCSMessageType::kGlobalPositionInt},
+        {attitude_filename, GCSMessageType::kAttitude},
+        {scaled_imu_filename, GCSMessageType::kHihghresImu}
+    };
+
+    for (auto data : files_with_type) {
+       ClearFile(data.first, data.second);
+    }
+
+    auto time_sleep_seconds = flow::kFileManagerSleepTimeSeconds;
+    while (true) {
+        std::this_thread::sleep_for(std::chrono::seconds(time_sleep_seconds));
+
+        LocalPositionFileUpdate(local_position_filename);
+        GlobalPositionFileUpdate(global_position_filename);
+        AttitudeFileUpdate(attitude_filename);
+        ScaledImuFileUpdate(scaled_imu_filename);
+    }
+}
+
+void InsertHighresImu(const GCSHighresImu& highres_imu) {
+    std::lock_guard<std::mutex> guard(g_queue_mutex);
+    g_highres_imu_queue.push_back(highres_imu);
+}
+
+void InsertAttitude(const GCSAttitude& attitude) {
+    std::lock_guard<std::mutex> guard(g_queue_mutex);
+    g_attitude_queue.push_back(attitude);
+}
+
+void InsertGlobalPosition(const GCSGlobalPosition& global_position) {
+    std::lock_guard<std::mutex> guard(g_queue_mutex);
+    g_global_position_queue.push_back(global_position);
+}
+
+void InsertLocalPosition(const GCSLocalPositionNed& local_position) {
+    std::lock_guard<std::mutex> guard(g_queue_mutex);
+    g_local_position_queue.push_back(local_position);
+}
+
+void ScaledImuFileUpdate(const std::string& filename)
+{
+    std::lock_guard<std::mutex> guard(g_queue_mutex);
+    for ( auto scaled_imu : g_highres_imu_queue ) {
+        auto timestamp = scaled_imu.time_ms;
+        std::vector<double> scaled_imu_vect = {
+            scaled_imu.xacc,
+            scaled_imu.yacc,
+            scaled_imu.zacc,
+            scaled_imu.xgyro,
+            scaled_imu.ygyro,
+            scaled_imu.zgyro,
+            scaled_imu.xmag,
+            scaled_imu.ymag,
+            scaled_imu.zmag,
+            scaled_imu.temperature
+        };
+
+        AppendVecToFile(scaled_imu_vect, filename, timestamp);
+        g_highres_imu_queue.pop_front();
+    }
+}
+
+void AttitudeFileUpdate(const std::string& filename)
+{
+    std::lock_guard<std::mutex> guard(g_queue_mutex);
+    for ( auto attitude : g_attitude_queue ) {
+        auto timestamp = attitude.time_ms;
+        std::vector<double> attitude_vect = {
+            attitude.roll,
+            attitude.pitch,
+            attitude.yaw,
+            attitude.rollspeed,
+            attitude.pitchspeed,
+            attitude.yawspeed
+        };
+
+        AppendVecToFile(attitude_vect, filename, timestamp);
+        g_attitude_queue.pop_front();
+    }
+}
+
+void GlobalPositionFileUpdate(const std::string& filename)
+{
+    std::lock_guard<std::mutex> guard(g_queue_mutex);
+    for ( auto global_position : g_global_position_queue ) {
+        auto timestamp = global_position.time_ms;
+        std::vector<int32_t> global_position_vect = {
+            static_cast<int32_t>(global_position.latitude),
+            static_cast<int32_t>(global_position.longitude),
+            static_cast<int32_t>(global_position.altitude),
+            global_position.vx,
+            global_position.vy,
+            global_position.vz
+        };
+
+        AppendVecToFile(global_position_vect, filename, timestamp);
+        g_global_position_queue.pop_front();
+    }
+}
+
+void LocalPositionFileUpdate(const std::string& filename)
+{
+    std::lock_guard<std::mutex> guard(g_queue_mutex);
+    for ( auto local_position : g_local_position_queue ) {
+        auto timestamp = local_position.time_ms;
+        std::vector<double> local_position_vect = {
+            local_position.x,
+            local_position.y,
+            local_position.z,
+            local_position.vx,
+            local_position.vy,
+            local_position.vz
+        };
+
+        AppendVecToFile(local_position_vect, filename, timestamp);
+        g_local_position_queue.pop_front();
     }
 }
 
@@ -33,23 +201,35 @@ void MavlinkMessageCallback(void)
 
         GCSResult result;
 
-        // TODO: process result
         result = conn.ReceiveSome();
+        if (result.message_status != GCSMessageStatus::kMessageOk) {
+            continue;
+        }
+
+        switch(result.type) {
+        case GCSMessageType::kGlobalPositionInt:
+            InsertGlobalPosition(result.global_position);
+            break;
+        case GCSMessageType::kAttitude:
+            InsertAttitude(result.attitude);
+            break;
+        case GCSMessageType::kLocalPositionNed:
+            InsertLocalPosition(result.local_position);
+            break;
+        case GCSMessageType::kHihghresImu:
+            InsertHighresImu(result.highres_imu);
+            break;
+        case GCSMessageType::kHeartbeat:
+        case GCSMessageType::kUnknown:
+        default:
+            break;
+        }
 
         auto time_elapsed = std::chrono::steady_clock::now() - tick_start;
         auto time_sleep = time_window - time_elapsed;
         if (time_sleep > std::chrono::milliseconds::zero()) {
             std::this_thread::sleep_for(time_sleep);
         }
-        
-        auto  time_thread = std::chrono::steady_clock::now() - tick_start;
-        float freq_thread = (1.0 / time_thread.count()) * 1e9;
-        std::cout << "[DEBUG] [MavlinkMessageCallback] running:"        << std::endl
-                  << "\tfreq_est     = " << freq_thread                 << " Hz" << std::endl
-                  << "\tthread_freq  = " << thread_frequency          << " Hz" << std::endl
-                  << "\ttime_sleep   = " << time_sleep.count() * 1e-6   << " ms" << std::endl
-                  << "\ttime_elapsed = " << time_elapsed.count() * 1e-6 << " ms" << std::endl
-                  << "\ttime_window  = " << time_window.count()         << " ms" << std::endl;
     }
 }
 
@@ -110,11 +290,13 @@ void EstimatorCallback(const std::string& pipeline)
 
     double prevX = target_width / 2.0;
     double prevY = target_height / 2.0;
-    double cumx, cumy = 0;
+    double cumx = 0.0, cumy = 0.0;
     double dt = flow::kInitialDt;
     double hfov = flow::kHFov;
 
     bool pause = false;
+
+    // TODO: filter by status
     bool filterByStatus = flow::kFilterByStatus;
     bool filterByVelocity = flow::kFilterByVelocity;
     double maxVelocityThreshold = flow::kMaxVelThreshold;
@@ -126,7 +308,6 @@ void EstimatorCallback(const std::string& pipeline)
     cv::Mat lastVec = cv::Mat::zeros(3, 1, CV_64F);
 
     const int scaleFactor = flow::kScaleFactor;
-    const int scaleHeight = flow::kScaleHeight;
     int imx, imy = (int) prevX;
 
     // TODO: refactor this filters
@@ -306,14 +487,17 @@ void EstimatorCallback(const std::string& pipeline)
         std::chrono::duration<float> step = std::chrono::steady_clock::now() - tick_start;
         dt = step.count();
 
+        auto current_system_clock = std::chrono::system_clock::now().time_since_epoch();
+        auto unix_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(current_system_clock).count();
         auto  time_thread = std::chrono::steady_clock::now() - tick_start;
         float freq_thread = (1.0 / time_thread.count()) * 1e9;
-        std::cout << "[DEBUG] [EstimatorCallback] running:"        << std::endl
-                  << "\tfreq_est     = " << freq_thread                 << " Hz" << std::endl
-                  << "\tthread_freq  = " << thread_frequency          << " Hz" << std::endl
-                  << "\ttime_sleep   = " << time_sleep.count()   * 1e-6 << " ms" << std::endl
-                  << "\ttime_elapsed = " << time_elapsed.count() * 1e-6 << " ms" << std::endl
-                  << "\ttime_window  = " << time_window.count()         << " ms" << std::endl;
+        // std::cout << "[DEBUG] [EstimatorCallback] running:"             << std::endl
+        //           << "\ttime         = " << unix_epoch                  << " ms" << std::endl
+        //           << "\tfreq_est     = " << freq_thread                 << " Hz" << std::endl
+        //           << "\tthread_freq  = " << thread_frequency            << " Hz" << std::endl
+        //           << "\ttime_sleep   = " << time_sleep.count()   * 1e-6 << " ms" << std::endl
+        //           << "\ttime_elapsed = " << time_elapsed.count() * 1e-6 << " ms" << std::endl
+        //           << "\ttime_window  = " << time_window.count()         << " ms" << std::endl;
     }
 
     cv::destroyAllWindows();
