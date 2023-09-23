@@ -10,7 +10,8 @@ enum class GCSMessageType {
     kHeartbeat,
     kGlobalPositionInt,
     kAttitude,
-    kLocalPositonNed
+    kLocalPositionNed,
+    kHihghresImu
 };
 
 enum class GCSMessageStatus {
@@ -20,32 +21,58 @@ enum class GCSMessageStatus {
     kMessageIncomplete
 };
 
-typedef struct GCSPosition {
-   double x;
-   double y;
-   double z;
+typedef struct GCSLocalPositionNed {
+    uint64_t time_ms;
+    double x;
+    double y;
+    double z;
+    double vx;
+    double vy;
+    double vz;
 } gcs_local_position_t;
 
 typedef struct GCSGlobalPosition {
+    uint64_t time_ms;
     uint32_t latitude;
     uint32_t longitude;
-    uint32_t altitude;
+    int32_t altitude;
+    int16_t vx;
+    int16_t vy;
+    int16_t vz;
 } gcs_global_position_t;
 
 typedef struct GCSAttitude {
-    double   linear_velocity;
-    double   angluar_velocity;
+    uint64_t time_ms;
     double   yaw;
     double   pitch;
     double   roll;
+    double   rollspeed;
+    double   pitchspeed;
+    double   yawspeed;
 } gcs_attitude_t;
 
 typedef struct GCSAttitudeQuaternion {
+    uint64_t time_ms;
     double   qw;
     double   qx;
     double   qy;
     double   qz;
 } gcs_attitude_quaternion_t;
+
+typedef struct GCSHighresImu {
+    uint64_t time_ms;
+    double xacc;
+    double yacc;
+    double zacc;
+    double xgyro;
+    double ygyro;
+    double zgyro;
+    double xmag;
+    double ymag;
+    double zmag;
+    double temperature;
+} gcs_highres_imu_t;
+
 
 struct GCSResult {
     uint8_t  autopilot;
@@ -57,6 +84,7 @@ struct GCSResult {
     gcs_global_position_t global_position;
     gcs_attitude_t attitude;
     gcs_attitude_quaternion_t attitude_quaternion;
+    gcs_highres_imu_t highres_imu;
 };
 
 
@@ -75,6 +103,7 @@ private:
     GCSResult handle_global_position_int(const mavlink_message_t& message) const;
     GCSResult handle_attitude(const mavlink_message_t& message) const;
     GCSResult handle_local_position_ned(const mavlink_message_t& message) const;
+    GCSResult handle_highres_imu(const mavlink_message_t& message) const;
 
     UDPLink m_Socket;
 };
