@@ -69,7 +69,7 @@ GCSResult GCSMavlink::ReceiveSome()
 GCSMavlink::GCSMavlink()
 {
     const char*   kAddress = "0.0.0.0";
-    const uint16_t kPort   = 14445;
+    const uint16_t kPort   = 14540;
     
     bool success = m_Socket.Initialize(kAddress, kPort);
     if(!success) {
