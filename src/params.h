@@ -26,15 +26,16 @@ const std::vector<double> kDistCoeffs = { 0, 0, 0, 0 ,0 };
 
 const double kMaxVelThreshold = 10;
 const double kInitialDt = 0.033;
+const double kLowPassAlpha = 0.9;
 const bool kFilterByStatus = true;
 const bool kFilterByVelocity = false;
 const int kScaleFactor = 1;
 const int kScaleHeight = 100;
 const int kFilterSize = 10;
 
-const double kFlowXScaler = 1;
-const double kFlowYScaler = 1;
-const int kFlowIntertialCountMax = 10;
+const double kFlowXScaler = 0.8;
+const double kFlowYScaler = 0.8;
+const int kFlowIntertialCountMax = 100;
 
 const std::string kGCSFlowFilename = "gcs_optical_flow.csv";
 const std::string kGCSAttitudeFilename = "gcs_attitude.csv";

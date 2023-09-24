@@ -5,41 +5,41 @@
 
 class DCOffsetFilter {
 public:
-  DCOffsetFilter(int windowSize) : windowSize_(windowSize), sum_(0), movingSum_(0) {}
+  DCOffsetFilter(int windowSize) : m_window_size(windowSize), m_sum(0), m_moving_sum(0) {}
 
   double removeOffset(double sample) {
-    if (windowSize_ == 0) 
+    if (m_window_size == 0) 
         return sample;
 
     // Add the new sample to the sum
-    sum_ += sample;
+    m_sum += sample;
 
     // Add the sample to the window buffer
-    windowBuffer_.push_back(sample);
+    m_window_buffer.push_back(sample);
 
     // If the window buffer is larger than the specified window size,
     // remove the oldest sample from the sum and the buffer
-    if (windowBuffer_.size() > windowSize_) {
-      sum_ -= windowBuffer_.front();
-      windowBuffer_.pop_front();
+    if (m_window_buffer.size() > m_window_size) {
+      m_sum -= m_window_buffer.front();
+      m_window_buffer.pop_front();
     }
 
     // Calculate the average and subtract it from the sample
-    double average = sum_ / windowBuffer_.size();
+    double average = m_sum / m_window_buffer.size();
     return sample - average;
   }
 
   double update(double sample) {
       double value = removeOffset(sample);
-      movingSum_ += value;
-      return movingSum_ / windowBuffer_.size();
+      m_moving_sum += value;
+      return m_moving_sum / m_window_buffer.size();
   }
 
 private:
-  int windowSize_;
-  double sum_;
-  double movingSum_;
-  std::deque<double> windowBuffer_;
+  int m_window_size;
+  double m_sum;
+  double m_moving_sum;
+  std::deque<double> m_window_buffer;
 };  
 
 #endif // DC_OFFSET_FILTER_H

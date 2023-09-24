@@ -24,6 +24,8 @@ add_executable(estimator
     params.h
     utils/DCOffsetFilter.cpp
     utils/DCOffsetFilter.h
+    utils/LPFilter.cpp
+    utils/LPFilter.h
 )
 
 target_compile_options(estimator PRIVATE

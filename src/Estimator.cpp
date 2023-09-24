@@ -6,7 +6,10 @@
 #include <opencv2/video.hpp>
 
 #include "opencv/CvInterface.h"
+
 #include "utils/DCOffsetFilter.h"
+#include "utils/LPFilter.h"
+
 #include "params.h"
 
 #include "Estimator.h"
@@ -56,7 +59,7 @@ void ClearFile(std::string& filename, const GCSMessageType& type = GCSMessageTyp
         header = "ts,xacc,yacc,zacc,xgyro,ygyro,zgyro,xmag,ymag,zmag,temperature";
         break;
     case GCSMessageType::kOpticalFlow:
-        header = "ts,vx,vy,xgyro,ygyro,zgyro";
+        header = "ts,integrated_x,integrated_y,xgyro,ygyro,zgyro";
         break;
     default:
         header = "ts,x,y,z,w";
@@ -374,17 +377,12 @@ void EstimatorCallback(const std::string& pipeline)
 
     // TODO: refactor this filters
     const int filter_size = flow::kFilterSize;
-    DCOffsetFilter xVelFilter(filter_size);
-    DCOffsetFilter yVelFilter(filter_size);
-    DCOffsetFilter zVelFilter(filter_size);
+    const double lp_alpha = flow::kLowPassAlpha;
 
-    DCOffsetFilter xxVelFilter(filter_size);
-    DCOffsetFilter yyVelFilter(filter_size);
-    DCOffsetFilter zzVelFilter(filter_size);
+    DCOffsetFilter optical_flow_dc_removal_filter_x(filter_size);
+    DCOffsetFilter optical_flow_dc_removal_filter_y(filter_size);
 
-    DCOffsetFilter xAngFilter(filter_size);
-    DCOffsetFilter yAngFilter(filter_size);
-    DCOffsetFilter zAngFilter(filter_size);
+    LPFilter2d optical_flow_lp_filter(lp_alpha);
 
     const int  thread_frequency = flow::kThreadFrequencyHz;
     const int  thread_milliseconds = static_cast<int>((1.0 / thread_frequency) * 1e3);
@@ -419,8 +417,10 @@ void EstimatorCallback(const std::string& pipeline)
                     continue;
                 }
 
-                filteredPrevPts.push_back(prevPoints[i]);
-                filteredCurrPts.push_back(currPoints[i]);
+                if (status[i]) {
+                    filteredPrevPts.push_back(prevPoints[i]);
+                    filteredCurrPts.push_back(currPoints[i]);
+                }
             }
 
             if (filteredCurrPts.size() < 4 || filteredPrevPts.size() != filteredPrevPts.size()) {
@@ -464,9 +464,16 @@ void EstimatorCallback(const std::string& pipeline)
             cv::Mat cam_t_img = K.inv() * (tvec) * dt * 0.5;
             cv::Mat cam_T_img = cv::Mat::eye(4, 4, CV_64F);
 
-            cam_t_img.at<double>(0) = xVelFilter.removeOffset(cam_t_img.at<double>(0)) * -1;
-            cam_t_img.at<double>(1) = yVelFilter.removeOffset(cam_t_img.at<double>(1)) * -1;
-            cam_t_img.at<double>(2) = zVelFilter.removeOffset(cam_t_img.at<double>(2));
+            double flow_x = cam_t_img.at<double>(0);
+            double flow_y = cam_t_img.at<double>(1);
+
+            // Calibrate the sensor by removing the offset
+            // Calibration must be performed prior to integration
+            flow_x = optical_flow_dc_removal_filter_x.update(flow_x);
+            flow_y = optical_flow_dc_removal_filter_y.update(flow_y);
+
+            cam_t_img.at<double>(0) = flow_x;
+            cam_t_img.at<double>(1) = flow_x;
 
             cam_R_img.copyTo(cam_T_img(cv::Rect(0, 0, 3, 3)));
             cam_t_img.copyTo(cam_T_img(cv::Rect(3, 0, 1, 3)));
@@ -479,21 +486,16 @@ void EstimatorCallback(const std::string& pipeline)
             cv::Vec3f xyzAngles = flow::opencv::rotationMatrixToEulerAngles(cam_R_img);
             cv::Vec3f xyzVelocity = accVelocity;
 
-            // xyzAngles[0] = xAngFilter.update(xyzAngles[0]);
-            // xyzAngles[1] = yAngFilter.update(xyzAngles[1]);
-            // xyzAngles[2] = zAngFilter.update(xyzAngles[2]) * -1;
-
-            // xyzVelocity[0] = xxVelFilter.update(xyzVelocity[0]);
-            // xyzVelocity[1] = yyVelFilter.update(xyzVelocity[1]);
-            // xyzVelocity[2] = zzVelFilter.update(xyzVelocity[2]);
+            std::vector<double> flow_xy = { xyzVelocity[0], xyzVelocity[1] };
+            flow_xy = optical_flow_lp_filter.update(flow_xy);
 
             auto sys_tick = std::chrono::system_clock::now().time_since_epoch();
             auto unix_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(sys_tick).count();
 
             gcs_optical_flow_t optical_flow;
             optical_flow.time_ms = unix_epoch;
-            optical_flow.flow_x = xyzVelocity[0];
-            optical_flow.flow_y = xyzVelocity[1];
+            optical_flow.flow_x = flow_xy[0] * -1 * flow::kFlowXScaler;
+            optical_flow.flow_y = flow_xy[1] * -1 * flow::kFlowYScaler;
             optical_flow.flow_xgyro = xyzAngles[0];
             optical_flow.flow_ygyro = xyzAngles[1];
             optical_flow.flow_zgyro = xyzAngles[2];

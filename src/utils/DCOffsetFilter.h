@@ -2,44 +2,36 @@
 #define DC_OFFSET_FILTER_H
 
 #include <deque>
+#include <vector>
 
-class DCOffsetFilter {
-public:
-  DCOffsetFilter(int windowSize) : windowSize_(windowSize), sum_(0), movingSum_(0) {}
-
-  double removeOffset(double sample) {
-    if (windowSize_ == 0) 
-        return sample;
-
-    // Add the new sample to the sum
-    sum_ += sample;
-
-    // Add the sample to the window buffer
-    windowBuffer_.push_back(sample);
-
-    // If the window buffer is larger than the specified window size,
-    // remove the oldest sample from the sum and the buffer
-    if (windowBuffer_.size() > windowSize_) {
-      sum_ -= windowBuffer_.front();
-      windowBuffer_.pop_front();
-    }
-
-    // Calculate the average and subtract it from the sample
-    double average = sum_ / windowBuffer_.size();
-    return sample - average;
-  }
-
-  double update(double sample) {
-      double value = removeOffset(sample);
-      movingSum_ += value;
-      return movingSum_ / windowBuffer_.size();
-  }
-
+class DCOffsetFilter
+{
 private:
-  int windowSize_;
-  double sum_;
-  double movingSum_;
-  std::deque<double> windowBuffer_;
+  int m_window_size;
+  double m_sum;
+  double m_moving_sum;
+  std::deque<double> m_window_buffer;
+
+public:
+  DCOffsetFilter(int window_size) : m_window_size(window_size), m_sum(0), m_moving_sum(0) {
+  }
+
+  void initialize(const double value);
+  double update(const double sample);
 };  
 
+class DCOffsetFilter2d : public DCOffsetFilter
+{
+private:
+  DCOffsetFilter m_dc_removal_x;
+  DCOffsetFilter m_dc_removal_y;
+
+public:
+  DCOffsetFilter2d(int window_size) : DCOffsetFilter(window_size), m_dc_removal_x(window_size), m_dc_removal_y(window_size) {
+  }
+
+  void initialize(const std::vector<double>& xy);
+  std::vector<double> update(const std::vector<double>& xy);
+
+};
 #endif // DC_OFFSET_FILTER_H
