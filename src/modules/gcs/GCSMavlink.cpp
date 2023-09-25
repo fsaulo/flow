@@ -60,6 +60,10 @@ GCSResult GCSMavlink::ReceiveSome()
             break;
         case MAVLINK_MSG_ID_HIGHRES_IMU:
             result = handle_highres_imu(message);
+            break;
+        case MAVLINK_MSG_ID_OPTICAL_FLOW_RAD:
+            result = handle_optical_flow_rad(message);
+            break;
         default:
             break;
         }
@@ -81,6 +85,30 @@ GCSMavlink::GCSMavlink()
 
 GCSMavlink::~GCSMavlink() {
     m_Socket.Close();
+}
+
+GCSResult GCSMavlink::handle_optical_flow_rad(const mavlink_message_t& message) const
+{
+    mavlink_optical_flow_rad_t optical_flow_rad_data;
+    mavlink_msg_optical_flow_rad_decode(&message, &optical_flow_rad_data);
+
+    auto sys_tick = std::chrono::system_clock::now().time_since_epoch();
+    auto unix_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(sys_tick).count();
+
+    gcs_optical_flow_t optical_flow;
+    optical_flow.time_ms = unix_epoch;
+    optical_flow.flow_x = optical_flow_rad_data.integrated_x;
+    optical_flow.flow_y = optical_flow_rad_data.integrated_y;
+    optical_flow.flow_xgyro = optical_flow_rad_data.integrated_xgyro;
+    optical_flow.flow_ygyro = optical_flow_rad_data.integrated_ygyro;
+    optical_flow.flow_zgyro = optical_flow_rad_data.integrated_zgyro;
+
+    GCSResult result;
+    result.message_status = GCSMessageStatus::kMessageOk;
+    result.type = GCSMessageType::kOpticalFlow;
+    result.optical_flow = optical_flow;
+
+    return result;
 }
 
 GCSResult GCSMavlink::handle_heartbeat(const mavlink_message_t& message) const

@@ -84,7 +84,6 @@ typedef struct GCSHighresImu {
     double temperature;
 } gcs_highres_imu_t;
 
-
 struct GCSResult {
     uint8_t  autopilot;
 
@@ -96,6 +95,7 @@ struct GCSResult {
     gcs_attitude_t attitude;
     gcs_attitude_quaternion_t attitude_quaternion;
     gcs_highres_imu_t highres_imu;
+    gcs_optical_flow_t optical_flow;
 };
 
 
@@ -115,6 +115,7 @@ private:
     GCSResult handle_attitude(const mavlink_message_t& message) const;
     GCSResult handle_local_position_ned(const mavlink_message_t& message) const;
     GCSResult handle_highres_imu(const mavlink_message_t& message) const;
+    GCSResult handle_optical_flow_rad(const mavlink_message_t& message) const;
 
     UDPLink m_Socket;
 };
