@@ -4,6 +4,7 @@
 
 #include <opencv2/videoio.hpp>
 #include <opencv2/video.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include "opencv/CvInterface.h"
 
@@ -19,14 +20,17 @@ std::deque<gcs_global_position_t> g_global_position_queue;
 std::deque<gcs_attitude_t> g_attitude_queue;
 std::deque<gcs_highres_imu_t> g_highres_imu_queue;
 std::deque<gcs_optical_flow_t> g_optical_flow_queue;
+std::deque<gcs_optical_flow_t> g_px4flow_queue;
 
 std::mutex g_global_position_mutex;
 std::mutex g_local_position_mutex;
 std::mutex g_attitude_mutex;
 std::mutex g_highres_imu_mutex;
 std::mutex g_optical_flow_mutex;
+std::mutex g_px4flow_mutex;
 
 uint64_t last_local_position_stamp;
+uint64_t last_px4flow_position_stamp;
 
 template <typename T>
 void AppendVecToFile(const std::vector<T>& data, const std::string& filename, const uint64_t ts) {
@@ -80,13 +84,15 @@ void FileManagerCallback(void)
     std::string attitude_filename = flow::kGCSAttitudeFilename;
     std::string scaled_imu_filename = flow::kGCSHighresImuFilename;
     std::string optical_flow_filename = flow::kGCSFlowFilename;
+    std::string px4flow_filename = flow::kGCSPx4flowFilename;
 
     std::vector<std::pair<std::string, GCSMessageType>> files_with_type = {
         { local_position_filename, GCSMessageType::kLocalPositionNed   },
         { global_position_filename, GCSMessageType::kGlobalPositionInt },
         { attitude_filename, GCSMessageType::kAttitude                 },
         { scaled_imu_filename, GCSMessageType::kHihghresImu            },
-        { optical_flow_filename, GCSMessageType::kOpticalFlow          }
+        { optical_flow_filename, GCSMessageType::kOpticalFlow          },
+        { px4flow_filename, GCSMessageType::kOpticalFlow               }
     };
 
     for (auto data : files_with_type) {
@@ -100,6 +106,7 @@ void FileManagerCallback(void)
         AttitudeFileUpdate(attitude_filename);
         HighresImuFileUpdate(scaled_imu_filename);
         OpticalFlowFileUpdate(optical_flow_filename);
+        Px4flowFileUpdate(px4flow_filename);
 
         std::this_thread::sleep_for(std::chrono::seconds(time_sleep_seconds));
         std::cout << "[DEBUG] [FileManagerCallback] Stream frequency: " << std::endl
@@ -107,7 +114,8 @@ void FileManagerCallback(void)
                   << "\tglobal_position:    " << g_global_position_queue.size() << " Hz" << std::endl
                   << "\tattitude:           " << g_attitude_queue.size()        << " Hz" << std::endl
                   << "\thighres_imu:        " << g_highres_imu_queue.size()     << " Hz" << std::endl
-                  << "\toptical_flow:       " << g_optical_flow_queue.size()    << " Hz" << std::endl;
+                  << "\toptical_flow:       " << g_optical_flow_queue.size()    << " Hz" << std::endl
+                  << "\tpx4flow:            " << g_px4flow_queue.size()         << " Hz" << std::endl;
     }
 }
 
@@ -142,6 +150,12 @@ void InsertLocalPosition(const GCSLocalPositionNed& local_position) {
 void InsertOpticalFlow(const GCSOpticalFlow& optical_flow) {
     std::lock_guard<std::mutex> guard(g_optical_flow_mutex);
     g_optical_flow_queue.push_back(optical_flow);
+}
+
+void InsertPx4flow(const GCSOpticalFlow& px4flow)
+{
+    std::lock_guard<std::mutex> guard(g_px4flow_mutex);
+    g_px4flow_queue.push_back(px4flow);
 }
 
 void HighresImuFileUpdate(const std::string& filename)
@@ -242,6 +256,24 @@ void OpticalFlowFileUpdate(const std::string& filename)
     }
 }
 
+void Px4flowFileUpdate(const std::string& filename)
+{
+    std::lock_guard<std::mutex> guard(g_px4flow_mutex);
+    for ( auto px4flow : g_px4flow_queue ) {
+        auto timestamp = px4flow.time_ms;
+        std::vector<double> px4flow_vect = {
+            px4flow.flow_x,
+            px4flow.flow_y,
+            px4flow.flow_xgyro,
+            px4flow.flow_ygyro,
+            px4flow.flow_zgyro
+        };
+
+        AppendVecToFile(px4flow_vect, filename, timestamp);
+        g_px4flow_queue.pop_front();
+    }
+}
+
 void MavlinkMessageCallback(void)
 {
     GCSMavlink conn;
@@ -274,6 +306,8 @@ void MavlinkMessageCallback(void)
             InsertHighresImu(result.highres_imu);
             break;
         case GCSMessageType::kOpticalFlow:
+            InsertPx4flow((result.optical_flow));
+            break;
         case GCSMessageType::kHeartbeat:
         case GCSMessageType::kUnknown:
         default:
@@ -286,6 +320,68 @@ void MavlinkMessageCallback(void)
             std::this_thread::sleep_for(time_sleep);
         }
     }
+}
+
+
+gcs_optical_flow_t
+CreateOpticalFlowMessage( const double integrated_x,
+                          const double integrated_y,
+                          const double gyro_x,
+                          const double gyro_y,
+                          const double gyro_z)
+{
+    auto sys_tick = std::chrono::system_clock::now().time_since_epoch();
+    auto unix_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(sys_tick).count();
+
+    gcs_optical_flow_t optical_flow;
+    optical_flow.time_ms = unix_epoch;
+    optical_flow.flow_x = integrated_x;
+    optical_flow.flow_y = integrated_y;
+    optical_flow.flow_xgyro = gyro_x;
+    optical_flow.flow_ygyro = gyro_y;
+    optical_flow.flow_zgyro = gyro_z;
+
+    return optical_flow;
+}
+
+void ComputeHistogram(std::vector<double>& vector_flow, double& mean, double &stddev) {
+    int bins = 255;
+    float range[] = {-10, 10};
+    const float* histogram_range = {range};
+    bool uniform = true;
+    bool accumulate = false;
+
+    cv::Mat vector_flow_mat(vector_flow.size(), 1, CV_32F);
+    for (int i = 0; i < vector_flow.size(); i++) {
+        if (vector_flow[i] > 0.05) {
+            vector_flow_mat.at<float>(i, 0) = vector_flow[i];
+        }
+    }
+
+    cv::Scalar mean_vect, stddev_vect;
+    cv::meanStdDev(vector_flow_mat, mean_vect, stddev_vect);
+
+    mean = mean_vect[0];
+    stddev = stddev_vect[0];
+
+    cv::Mat histogram;
+    cv::calcHist(&vector_flow_mat, 1, 0, cv::Mat(), histogram, 1, &bins, &histogram_range, uniform, accumulate);
+    cv::normalize(histogram, histogram, 0, 1, cv::NORM_MINMAX, -1, cv::Mat());
+
+    int histWidth = 512;
+    int histHeight = 400;
+    int binWidth = cvRound((double)histWidth / bins);
+    cv::Mat histogram_image(histHeight, histWidth, CV_8UC3, cv::Scalar(0, 0, 0));
+
+    for (int i = 1; i < bins; i++) {
+        cv::line(histogram_image,
+                 cv::Point(binWidth * (i - 1), histHeight - cvRound(histogram.at<float>(i - 1) * histHeight)),
+                 cv::Point(binWidth * i, histHeight - cvRound(histogram.at<float>(i) * histHeight)),
+                 cv::Scalar(255, 255, 255), 2, 8, 0);
+    }
+
+    cv::imshow("Histogram", histogram_image);
+    cv::waitKey(1);
 }
 
 void EstimatorCallback(const std::string& pipeline)
@@ -331,19 +427,21 @@ void EstimatorCallback(const std::string& pipeline)
     // cv::Mat distorted;
     // cv::resize(prevFrame, prevFrame, size, 0, 0, cv::INTER_LINEAR);
 
-    cv::Mat prev_roi_frame = prevFrame(roi);
+    // cv::Mat prev_roi_frame = prevFrame(roi);
+    cv::Mat prev_roi_frame;
+    prevFrame.copyTo(prev_roi_frame);
     cv::cvtColor(prev_roi_frame, prev_roi_frame, cv::COLOR_BGR2GRAY);
     cv::goodFeaturesToTrack(prev_roi_frame, prevPoints, flow::kMaxCorners, flow::kQualityLevel, flow::kMinDistance);
 
     double cx = flow::kCx;
     double cy = flow::kCy;
-    double focalLength = flow::kFocalLength;
+    double focal_length = flow::kFocalLength;
 
     std::vector<double> dist_coeffs = flow::kDistCoeffs;
     cv::Mat distCoeffs(5, 1, CV_64F, dist_coeffs.data());
     cv::Mat K = (cv::Mat_<double>(3, 3) <<
-        focalLength, 0, cx,
-        0, focalLength, cy,
+        focal_length, 0, cx,
+        0, focal_length, cy,
         0, 0, 1);
 
     cv::Mat priorPose = (cv::Mat_<double>(4, 4) <<
@@ -369,11 +467,12 @@ void EstimatorCallback(const std::string& pipeline)
     cv::Mat trajectory = cv::Mat::zeros(output_width, output_height, CV_8UC3);
     cv::Mat accVelocity = cv::Mat::zeros(3, 1, CV_64F);
     cv::Mat priorR = cv::Mat::zeros(3, 3, CV_64F);
-    cv::Mat lastVec = cv::Mat::zeros(3, 1, CV_64F);
 
     const int scaleFactor = flow::kScaleFactor;
     int imx, imy = (int) prevX;
     int inertial_count = 0;
+    double lower_bound_threshold = 0;
+    double upper_bound_threshold = 10;
 
     // TODO: refactor this filters
     const int filter_size = flow::kFilterSize;
@@ -381,12 +480,16 @@ void EstimatorCallback(const std::string& pipeline)
 
     DCOffsetFilter optical_flow_dc_removal_filter_x(filter_size);
     DCOffsetFilter optical_flow_dc_removal_filter_y(filter_size);
-
     LPFilter2d optical_flow_lp_filter(lp_alpha);
 
     const int  thread_frequency = flow::kThreadFrequencyHz;
     const int  thread_milliseconds = static_cast<int>((1.0 / thread_frequency) * 1e3);
     const auto time_window = std::chrono::milliseconds(thread_milliseconds);
+
+    gcs_optical_flow_t initial_optical_flow = CreateOpticalFlowMessage(0, 0, 0, 0, 0);
+    InsertOpticalFlow(initial_optical_flow);
+
+    std::vector<double> vector_flow;
 
     while (video.read(currFrame))
     {
@@ -394,7 +497,8 @@ void EstimatorCallback(const std::string& pipeline)
         cv::Mat curr_roi_frame;
 
         try {
-            curr_roi_frame = currFrame(roi);
+            // curr_roi_frame = currFrame(roi);
+            currFrame.copyTo(curr_roi_frame);
             cv::cvtColor(curr_roi_frame, curr_roi_frame, cv::COLOR_BGR2GRAY);
             cv::calcOpticalFlowPyrLK(prev_roi_frame, curr_roi_frame, prevPoints, currPoints, status, error);
 
@@ -406,25 +510,59 @@ void EstimatorCallback(const std::string& pipeline)
                 count++;
             }
 
+            // Filtering computed optical flow.
+            // Inserting zero flow when optical flow cannot be computed
             double averageMagnitude = sumMagnitude / count;
             for (size_t i = 0; i < status.size(); ++i) {
-                if (!status[i]) {
-                    continue;
+                bool optical_flow_healthy = true;
+                if (!status[i] && filterByStatus) {
+                    optical_flow_healthy = false;
                 }
 
                 double velocity = cv::norm(prevPoints[i] - currPoints[i]);
-                if (velocity > averageMagnitude + maxVelocityThreshold && filterByVelocity) {
-                    continue;
+                if (velocity >= (averageMagnitude + maxVelocityThreshold) && filterByVelocity) {
+                    optical_flow_healthy = false;
                 }
 
-                if (status[i]) {
+                double flow_dx = currPoints[i].x - prevPoints[i].x;
+                double flow_dy = currPoints[i].y - prevPoints[i].y;
+                double abs_flow = sqrt(flow_dx * flow_dx + flow_dy * flow_dy);
+                vector_flow.push_back(abs_flow);
+
+                if (abs_flow < lower_bound_threshold || abs_flow >= upper_bound_threshold) {
+                    std::cout << "[DEBUG] Rejected optical flow: \n"
+                              << "\tupper_bound_threshold = " << upper_bound_threshold << std::endl
+                              << "\tlower_boud_threshold  = " << lower_bound_threshold << std::endl
+                              << "\tabs_flow              = " << abs_flow << std::endl;
+                   optical_flow_healthy = false;
+                }
+
+                if (optical_flow_healthy) {
                     filteredPrevPts.push_back(prevPoints[i]);
                     filteredCurrPts.push_back(currPoints[i]);
                 }
             }
 
-            if (filteredCurrPts.size() < 4 || filteredPrevPts.size() != filteredPrevPts.size()) {
+            if (filteredCurrPts.size() <= 10 || filteredPrevPts.size() != filteredPrevPts.size()) {
+                gcs_optical_flow_t optical_flow_zero;
+                optical_flow_zero = CreateOpticalFlowMessage( 0, 0, 0, 0, 0 );
+                InsertOpticalFlow(optical_flow_zero);
+
+                // Update frames and feature points
+                std::swap(prev_roi_frame, curr_roi_frame);
+                std::swap(prevPoints, currPoints);
+                cv::goodFeaturesToTrack(prev_roi_frame, prevPoints, flow::kMaxCorners, flow::kQualityLevel, flow::kMinDistance);
+
+                filteredPrevPts.clear();
+                filteredCurrPts.clear();
                 continue;
+            }
+
+            std::vector<cv::Point2f> undistorted_points = filteredCurrPts;
+            cv::undistortPoints(undistorted_points, filteredCurrPts, K, distCoeffs);
+            for ( int i = 0; i < undistorted_points.size(); i++ ) {
+                filteredCurrPts[i].x = filteredCurrPts[i].x * focal_length + cx;
+                filteredCurrPts[i].y = filteredCurrPts[i].y * focal_length + cy;
             }
 
             std::vector<cv::Mat> rvec_matrices, tvec_tvectors, nvec_normals;
@@ -460,12 +598,13 @@ void EstimatorCallback(const std::string& pipeline)
                 R = U*Vt;
             }
 
+            // cv::Mat cam_t_img = K.inv() * (tvec) * dt * 0.5;
+            cv::Mat cam_t_img = tvec;
             cv::Mat cam_R_img = K.inv() * R * K;
-            cv::Mat cam_t_img = K.inv() * (tvec) * dt * 0.5;
             cv::Mat cam_T_img = cv::Mat::eye(4, 4, CV_64F);
 
-            double flow_x = cam_t_img.at<double>(0);
-            double flow_y = cam_t_img.at<double>(1);
+            double flow_x = tvec.at<double>(0);
+            double flow_y = tvec.at<double>(1);
 
             // Calibrate the sensor by removing the offset
             // Calibration must be performed prior to integration
@@ -473,7 +612,7 @@ void EstimatorCallback(const std::string& pipeline)
             flow_y = optical_flow_dc_removal_filter_y.update(flow_y);
 
             cam_t_img.at<double>(0) = flow_x;
-            cam_t_img.at<double>(1) = flow_x;
+            cam_t_img.at<double>(1) = flow_y;
 
             cam_R_img.copyTo(cam_T_img(cv::Rect(0, 0, 3, 3)));
             cam_t_img.copyTo(cam_T_img(cv::Rect(3, 0, 1, 3)));
@@ -484,73 +623,73 @@ void EstimatorCallback(const std::string& pipeline)
             accVelocity = camPose.rowRange(0, 3).col(3);
 
             cv::Vec3f xyzAngles = flow::opencv::rotationMatrixToEulerAngles(cam_R_img);
-            cv::Vec3f xyzVelocity = accVelocity;
 
-            std::vector<double> flow_xy = { xyzVelocity[0], xyzVelocity[1] };
+            std::vector<double> flow_xy = { flow_x, flow_y };
             flow_xy = optical_flow_lp_filter.update(flow_xy);
 
-            auto sys_tick = std::chrono::system_clock::now().time_since_epoch();
-            auto unix_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(sys_tick).count();
-
             gcs_optical_flow_t optical_flow;
-            optical_flow.time_ms = unix_epoch;
-            optical_flow.flow_x = flow_xy[0] * -1 * flow::kFlowXScaler;
-            optical_flow.flow_y = flow_xy[1] * -1 * flow::kFlowYScaler;
-            optical_flow.flow_xgyro = xyzAngles[0];
-            optical_flow.flow_ygyro = xyzAngles[1];
-            optical_flow.flow_zgyro = xyzAngles[2];
+            optical_flow = CreateOpticalFlowMessage(
+                atan2(flow_xy[0], focal_length),
+                atan2(flow_xy[1], focal_length),
+                xyzAngles[0],
+                xyzAngles[1],
+                xyzAngles[2]
+            );
 
-            // Wait a little bit before start integrating sensor
-            if (inertial_count < flow::kFlowIntertialCountMax) {
-                inertial_count++;
-                continue;
-            }
+            cumx = flow_xy[0];
+            cumx = flow_xy[1];
 
             InsertOpticalFlow(optical_flow);
-            std::cout << "[DEBUG] [lk_pose_estimation] position   : " << xyzVelocity << std::endl;
-            std::cout << "[DEBUG] [lk_pose_estimation] angular_vel: " << xyzAngles << std::endl;
-
-            cumx += xyzVelocity[0];
-            cumy += xyzVelocity[1];
-            imx = (int) (cumx * scaleFactor) + output_width / 2;
-            imy = (int) (cumy * scaleFactor) + output_height / 2;
 
             priorPose = camPose;
             priorR = R;
-            lastVec = tvec;
         } catch (const cv::Exception& e) {
+            gcs_optical_flow_t optical_flow_zero;
+            optical_flow_zero = CreateOpticalFlowMessage( 0, 0, 0, 0, 0 );
+            InsertOpticalFlow(optical_flow_zero);
+
             std::cout << e.what()<< std::endl;
         }
 
-        cv::Mat flowDisplay = curr_roi_frame.clone();
-        cv::Mat coloredFlowDisplay;
+        double mean, stddev;
+        ComputeHistogram(vector_flow, mean, stddev);
 
-        cv::cvtColor(flowDisplay, coloredFlowDisplay, cv::COLOR_GRAY2BGR);
-        for (size_t i = 0; i < prevPoints.size(); ++i) {
-            if (status[i]) {
-                cv::arrowedLine(coloredFlowDisplay, prevPoints[i], currPoints[i], cv::Scalar(0, 0, 255), 2);
-                cv::arrowedLine(coloredFlowDisplay, filteredPrevPts[i], filteredCurrPts[i], cv::Scalar(30, 150, 0), 3);
-            }
+        double n_stddev = 4;
+        lower_bound_threshold = mean - n_stddev * stddev;
+        upper_bound_threshold = mean + n_stddev * stddev;
+
+        if (vector_flow.size() >= 100000) {
+            vector_flow.erase(vector_flow.begin());
         }
+
+        // cv::Mat flowDisplay = curr_roi_frame.clone();
+        // cv::Mat coloredFlowDisplay;
+        // cv::cvtColor(flowDisplay, coloredFlowDisplay, cv::COLOR_GRAY2BGR);
+        // for (size_t i = 0; i < prevPoints.size(); ++i) {
+        //     if (status[i]) {
+        //         cv::arrowedLine(coloredFlowDisplay, prevPoints[i], currPoints[i], cv::Scalar(0, 0, 255), 2);
+        //         cv::arrowedLine(coloredFlowDisplay, filteredPrevPts[i], filteredCurrPts[i], cv::Scalar(30, 150, 0), 3);
+        //     }
+        // }
 
         filteredPrevPts.clear();
         filteredCurrPts.clear();
 
-        cv::resize(coloredFlowDisplay, coloredFlowDisplay, cv::Size(image_width, image_height), 0, 0, cv::INTER_LINEAR);
-        cv::line(trajectory, cv::Point(prevX, prevY), cv::Point(imx, imy), cv::Scalar(0, 0, 255), 2);
-        prevX = imx;
-        prevY = imy;
+        // cv::resize(coloredFlowDisplay, coloredFlowDisplay, cv::Size(image_width, image_height), 0, 0, cv::INTER_LINEAR);
+        // cv::line(trajectory, cv::Point(prevX, prevY), cv::Point(imx, imy), cv::Scalar(0, 0, 255), 2);
+        // prevX = imx;
+        // prevY = imy;
+        //
+        // if (!pause) {
+        //     cv::imshow("Optical Flow", coloredFlowDisplay);
+        //     cv::imshow("Trajectory", trajectory);
+        // }
 
-        if (!pause) {
-            // cv::imshow("Optical Flow", coloredFlowDisplay);
-            // cv::imshow("Trajectory", trajectory);
-        }
-
-        int keyboard = cv::waitKey(1);
-        if (keyboard == 'q' || keyboard == 27)
-            break;
-        if (keyboard == 'p')
-            pause = !pause;
+        // int keyboard = cv::waitKey(1);
+        // if (keyboard == 'q' || keyboard == 27)
+        //     break;
+        // if (keyboard == 'p')
+        //     pause = !pause;
 
         // Update frames and feature points
         std::swap(prev_roi_frame, curr_roi_frame);
