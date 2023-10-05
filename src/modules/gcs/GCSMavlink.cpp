@@ -35,7 +35,7 @@ GCSResult GCSMavlink::ReceiveSome()
     
     for (int i = 0; i < nret; ++i) {
         uint8_t mavlink_status = mavlink_parse_char(
-                MAVLINK_COMM_0, 
+                MAVLINK_COMM_0,
                 buffer[i], 
                 &message, 
                 &message_status
@@ -64,6 +64,12 @@ GCSResult GCSMavlink::ReceiveSome()
         case MAVLINK_MSG_ID_OPTICAL_FLOW_RAD:
             result = handle_optical_flow_rad(message);
             break;
+        case MAVLINK_MSG_ID_NAMED_VALUE_INT:
+            break;
+        case MAVLINK_MSG_ID_COMMAND_LONG:
+            break;
+        case MAVLINK_MSG_ID_COMMAND_INT:
+            break;
         default:
             break;
         }
@@ -74,7 +80,7 @@ GCSResult GCSMavlink::ReceiveSome()
 
 GCSMavlink::GCSMavlink()
 {
-    const char*   kAddress = "0.0.0.0";
+    const char*   kAddress = "127.0.0.1";
     const uint16_t kPort   = 14540;
     
     bool success = m_Socket.Initialize(kAddress, kPort);

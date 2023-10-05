@@ -12,9 +12,7 @@ flow_vy_col = 3  # Column for vy
 vx_col = 2
 vy_col = 3
 
-plot "../build/gcs_optical_flow.csv" using ts_col:flow_vx_col with lines title "flow_{x}", \
-     "../build/gcs_optical_flow.csv" using ts_col:flow_vy_col with lines title "flow_{y}", \
-     "../build/gcs_px4flow.csv" using ts_col:vx_col with lines title "integrated_x", \
+plot "../build/gcs_px4flow.csv" using ts_col:vx_col with lines title "integrated_x", \
      "../build/gcs_px4flow.csv" using ts_col:vy_col with lines title "integrated_y"
 
 

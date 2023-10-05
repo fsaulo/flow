@@ -116,6 +116,7 @@ private:
     GCSResult handle_local_position_ned(const mavlink_message_t& message) const;
     GCSResult handle_highres_imu(const mavlink_message_t& message) const;
     GCSResult handle_optical_flow_rad(const mavlink_message_t& message) const;
+    void handle_command_long(const mavlink_message_t& message) const;
 
     UDPLink m_Socket;
 };

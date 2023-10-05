@@ -328,7 +328,7 @@ CreateOpticalFlowMessage( const double integrated_x,
                           const double integrated_y,
                           const double gyro_x,
                           const double gyro_y,
-                          const double gyro_z)
+                          const double gyro_z )
 {
     auto sys_tick = std::chrono::system_clock::now().time_since_epoch();
     auto unix_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(sys_tick).count();
@@ -491,8 +491,7 @@ void EstimatorCallback(const std::string& pipeline)
 
     std::vector<double> vector_flow;
 
-    while (video.read(currFrame))
-    {
+    while ( video.read(currFrame) ) {
         auto tick_start = std::chrono::steady_clock::now();
         cv::Mat curr_roi_frame;
 
@@ -510,8 +509,9 @@ void EstimatorCallback(const std::string& pipeline)
                 count++;
             }
 
-            // Filtering computed optical flow.
-            // Inserting zero flow when optical flow cannot be computed
+            // Filtering computed optical flow using sigma clipping method.
+            // We first compute a histogram of the vector flow, then we set an outlier threashold
+            // bounded to the histogram's standard deviation.
             double averageMagnitude = sumMagnitude / count;
             for (size_t i = 0; i < status.size(); ++i) {
                 bool optical_flow_healthy = true;
@@ -529,6 +529,7 @@ void EstimatorCallback(const std::string& pipeline)
                 double abs_flow = sqrt(flow_dx * flow_dx + flow_dy * flow_dy);
                 vector_flow.push_back(abs_flow);
 
+                // Rejecting outliers
                 if (abs_flow < lower_bound_threshold || abs_flow >= upper_bound_threshold) {
                     std::cout << "[DEBUG] Rejected optical flow: \n"
                               << "\tupper_bound_threshold = " << upper_bound_threshold << std::endl
@@ -543,6 +544,7 @@ void EstimatorCallback(const std::string& pipeline)
                 }
             }
 
+            // Inserting zero flow when optical flow cannot be computed or is not healthy.
             if (filteredCurrPts.size() <= 10 || filteredPrevPts.size() != filteredPrevPts.size()) {
                 gcs_optical_flow_t optical_flow_zero;
                 optical_flow_zero = CreateOpticalFlowMessage( 0, 0, 0, 0, 0 );
@@ -654,42 +656,46 @@ void EstimatorCallback(const std::string& pipeline)
         double mean, stddev;
         ComputeHistogram(vector_flow, mean, stddev);
 
-        double n_stddev = 4;
+        double n_stddev = 5;
         lower_bound_threshold = mean - n_stddev * stddev;
         upper_bound_threshold = mean + n_stddev * stddev;
 
-        if (vector_flow.size() >= 100000) {
+        if (vector_flow.size() >= 1000) {
             vector_flow.erase(vector_flow.begin());
         }
 
-        // cv::Mat flowDisplay = curr_roi_frame.clone();
-        // cv::Mat coloredFlowDisplay;
-        // cv::cvtColor(flowDisplay, coloredFlowDisplay, cv::COLOR_GRAY2BGR);
-        // for (size_t i = 0; i < prevPoints.size(); ++i) {
-        //     if (status[i]) {
-        //         cv::arrowedLine(coloredFlowDisplay, prevPoints[i], currPoints[i], cv::Scalar(0, 0, 255), 2);
-        //         cv::arrowedLine(coloredFlowDisplay, filteredPrevPts[i], filteredCurrPts[i], cv::Scalar(30, 150, 0), 3);
-        //     }
-        // }
+        cv::Mat flowDisplay = curr_roi_frame.clone();
+        cv::Mat coloredFlowDisplay;
+        cv::Mat coloredFlowDisplayBad;
+        cv::cvtColor(flowDisplay, coloredFlowDisplay, cv::COLOR_GRAY2BGR);
+        cv::cvtColor(flowDisplay, coloredFlowDisplayBad, cv::COLOR_GRAY2BGR);
+        for (size_t i = 0; i < prevPoints.size(); ++i) {
+            if (status[i]) {
+                cv::arrowedLine(coloredFlowDisplayBad, prevPoints[i], currPoints[i], cv::Scalar(0, 0, 255), 1);
+                cv::arrowedLine(coloredFlowDisplay, filteredPrevPts[i], filteredCurrPts[i], cv::Scalar(30, 150, 0), 1);
+            }
+        }
 
         filteredPrevPts.clear();
         filteredCurrPts.clear();
 
-        // cv::resize(coloredFlowDisplay, coloredFlowDisplay, cv::Size(image_width, image_height), 0, 0, cv::INTER_LINEAR);
         // cv::line(trajectory, cv::Point(prevX, prevY), cv::Point(imx, imy), cv::Scalar(0, 0, 255), 2);
         // prevX = imx;
         // prevY = imy;
-        //
-        // if (!pause) {
-        //     cv::imshow("Optical Flow", coloredFlowDisplay);
-        //     cv::imshow("Trajectory", trajectory);
-        // }
 
-        // int keyboard = cv::waitKey(1);
-        // if (keyboard == 'q' || keyboard == 27)
-        //     break;
-        // if (keyboard == 'p')
-        //     pause = !pause;
+        cv::Mat optical_flow_output_image;
+        cv::hconcat(coloredFlowDisplayBad, coloredFlowDisplay, optical_flow_output_image);
+        cv::resize(optical_flow_output_image, optical_flow_output_image, cv::Size(800, 400), 0, 0, cv::INTER_LINEAR);
+        if (!pause) {
+            cv::imshow("Optical Flow", optical_flow_output_image);
+        //     cv::imshow("Trajectory", trajectory);
+        }
+
+        int keyboard = cv::waitKey(10);
+        if (keyboard == 'q' || keyboard == 27)
+            break;
+        if (keyboard == 'p')
+            pause = !pause;
 
         // Update frames and feature points
         std::swap(prev_roi_frame, curr_roi_frame);
@@ -709,5 +715,3 @@ void EstimatorCallback(const std::string& pipeline)
     cv::destroyAllWindows();
     video.release();
 }
-
-

@@ -26,7 +26,7 @@ const std::vector<double> kDistCoeffs = { 0, 0, 0, 0 ,0 };
 
 const double kMaxVelThreshold = 5.0;
 const double kInitialDt = 0.033;
-const double kLowPassAlpha = 0.85;
+const double kLowPassAlpha = 0.5;
 const bool kFilterByStatus = true;
 const bool kFilterByVelocity = false;
 const int kScaleFactor = 1;
