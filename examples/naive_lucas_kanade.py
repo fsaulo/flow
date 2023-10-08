@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-from scipy.signal import convolve2d
 import matplotlib.pyplot as plt
 import numpy as np
 import cv2 as cv
@@ -33,29 +32,33 @@ def convolve(image, kernel):
 			k = (roi * kernel).sum()
 			output[y - pad, x - pad] = k
 
-	return output
+	return output.flatten()
 
 def computePartialDerivatives(patch : np.ndarray):
     kernel_x = np.array([
-        [0, 0, 0], 
         [-1, 0, 1], 
-        [0, 0, 0]
+        [-2, 0, 2], 
+        [-1, 0, 1]
     ])
     kernel_y = np.array([
-        [0, -1, 0], 
+        [-1, -2, -1], 
         [0, 0, 0], 
-        [0, 1, 0]
+        [1, 2, 1]
     ])
+    kernel_t = np.ones((3, 3)) * (1/9)
 
-    # gx = convolve(patch, kernel_x).flatten()
-    # gy = convolve(patch, kernel_y).flatten()
-    gx = cv.Sobel(patch, cv.CV_64F, 1, 0, ksize=3).flatten()
-    gy = cv.Sobel(patch, cv.CV_64F, 0, 1, ksize=3).flatten()
-    return gx, gy
+    # gx = convolve(patch, kernel_x)
+    # gy = convolve(patch, kernel_y)
+    # gt = convolve(patch, kernel_t)
+
+    gx = np.convolve(patch.flatten(), kernel_x.flatten())
+    gy = np.convolve(patch.flatten(), kernel_y.flatten())
+    gt = np.convolve(patch.flatten(), kernel_t.flatten())
+    return gx, gy, gt
 
 def computeLKDenseFlow(prev_img, curr_img):
     img_shape = prev_img.shape
-    square_size = 5
+    square_size = 16
     img_len = img_shape[0]
     flow_result = np.zeros((prev_img.shape[0], prev_img.shape[1], 2))
 
@@ -66,39 +69,25 @@ def computeLKDenseFlow(prev_img, curr_img):
             prev_patch = prev_img[j:j+square_size,i:i+square_size]
             curr_patch = curr_img[j:j+square_size,i:i+square_size]
 
-            # g0_x, g0_y = computePartialDerivatives(prev_patch)
-            # g1_x, g1_y = computePartialDerivatives(curr_patch)
+            g0_x, g0_y, g0_t = computePartialDerivatives(prev_patch)
+            g1_x, g1_y, g1_t = computePartialDerivatives(curr_patch)
 
-            # grad_x = g1_x - g0_x
-            # grad_y = g1_y - g0_y
-
-            kernelT = np.ones((2, 2)) * 0.25
-            kernelX = np.array([[-1, 1], [-1, 1]]) * 0.25  # kernel for computing d/dx
-            kernelY = np.array([[-1, -1], [1, 1]]) * 0.25  # kernel for computing d/dy
-
-            grad_x = convolve2d(prev_patch, kernelX, "same") + convolve2d(curr_patch, kernelX, "same")
-            grad_y = convolve2d(prev_patch, kernelY, "same") + convolve2d(curr_patch, kernelY, "same")
-            grad_t = convolve2d(prev_patch, kernelT, "same") + convolve2d(curr_patch, kernelT, "same")
-
-            grad_x = grad_x.flatten()
-            grad_y = grad_y.flatten()
-
-            # grad_t = curr_patch-prev_patch
+            grad_x = g1_x + g0_x
+            grad_y = g1_y + g0_y
+            grad_t = g1_t - g0_t
 
             A = np.array([grad_x, grad_y]).T
             B = np.array([-grad_t]).T.flatten()
             ATA = A.T @ A
 
-            # eps = 1e-9
-            # threshold = 2
-            # eig_x = np.linalg.norm(ATA[0])
-            # eig_y = np.linalg.norm(ATA[1])
-            # if eig_x > eig_y + threshold or eig_y > eig_x + threshold: continue
-            # if eig_x < eps or eig_y < eps: continue
+            eps = 1e-12
+            eig_x = np.linalg.norm(ATA[0])
+            eig_y = np.linalg.norm(ATA[1])
+            if eig_x < eps or eig_y < eps: continue
 
-            if (np.linalg.det(ATA)) > 1e-9:
+            if (np.linalg.det(ATA)) > eps:
                 flow = np.linalg.inv(ATA) @ (A.T @ B)
-            flow_result[j:j+square_size,i:i+square_size] = np.array([flow[0]*23, flow[1]*22])
+            flow_result[i:i+square_size,j:j+square_size] = np.array([flow[0]*1e3, flow[1]*1e3])
 
     return np.array(flow_result)
 
@@ -116,8 +105,9 @@ def main(args):
 
             curr = cv.resize(curr, (im_size, im_size))[:,:, 0]
             flow = computeLKDenseFlow(prev, curr)
-            # flow = cv.calcOpticalFlowFarneback(prev, curr, None, 0.5, 2, 3, 3, 5, 1.2, 0)
-            vis = draw_flow(curr, flow, step=2)
+            # flow = cv.calcOpticalFlowFarneback(prev, curr, None, 0.5, 2, 16, 3, 5, 1.2, 0)
+            vis = draw_flow(curr, flow, step=10)
+            # import pdb; pdb.set_trace()
 
             cv.imshow('frame', vis)
             k = cv.waitKey(30) & 0xff
